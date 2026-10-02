@@ -141,12 +141,267 @@ def layer_and_field_ranges(packet: Packet):
             if end_byte <= start_byte or start_byte >= len(layer_bytes):
                 continue
             value = _format_value(current.getfieldval(field.name))
+            if field.name in ("src", "dst") and current.name == "Ethernet":
+                vendor = mac_vendor(value)
+                if vendor:
+                    value += f" ({vendor})"
             fields.append(
                 [base + start_byte, base + end_byte, current.name, field.name, value]
             )
         base += header_len
         current = current.payload
     return layers, fields
+
+
+FIXABLE_FIELDS = ("chksum", "cksum", "len", "plen")
+
+
+def walk_layers(packet: Packet):
+    """Yield each layer of a packet's payload chain."""
+    current = packet
+    while isinstance(current, Packet) and not isinstance(current, NoPayload):
+        yield current
+        current = current.payload
+
+
+def fix_bytes(data: bytes, linktype: int, keep=None) -> bytes:
+    """Rebuild a packet with checksums and length fields recomputed.
+
+    Deleting a dissected field resets it to its default, and scapy fills
+    checksum/length defaults in while rebuilding. `keep` is an optional
+    (layer, field_name) left untouched, for when a user sets one by hand.
+    """
+    packet = dissect(data, linktype)
+    for layer in walk_layers(packet):
+        for name in FIXABLE_FIELDS:
+            if (layer, name) != (keep or (None, None)) and name in layer.fields:
+                try:
+                    delattr(layer, name)
+                except Exception:
+                    pass
+    try:
+        return raw(packet)
+    except Exception:
+        return data
+
+
+def bad_checksums(data: bytes, linktype: int) -> list:
+    """Names of checksum fields that do not match their recomputed values."""
+    try:
+        original = dissect(data, linktype)
+        rebuilt = dissect(fix_bytes(data, linktype), linktype)
+    except Exception:
+        return []
+    bad = []
+    for ours, theirs in zip(walk_layers(original), walk_layers(rebuilt)):
+        for name in ("chksum", "cksum"):
+            if name in [f.name for f in ours.fields_desc]:
+                try:
+                    if ours.getfieldval(name) != theirs.getfieldval(name):
+                        bad.append(f"{ours.name}.{name}")
+                except Exception:
+                    pass
+    return bad
+
+
+def mac_vendor(mac: str):
+    """Short vendor name for a MAC address, when scapy's manuf db knows it."""
+    try:
+        vendor = conf.manufdb._get_short_manuf(mac)
+        return vendor if vendor and vendor != mac else None
+    except Exception:
+        return None
+
+
+def scapy_namespace() -> dict:
+    """The namespace scapy expressions evaluate in.
+
+    Expressions come from the user's own Vim commands, so this carries the
+    same trust as :python3 — it is a convenience, not a security boundary.
+    """
+    import scapy.all
+
+    return {name: getattr(scapy.all, name) for name in dir(scapy.all)}
+
+
+def set_field(data: bytes, linktype: int, spec: str) -> bytes:
+    """Apply a 'field=value' or 'Layer.field=value' edit to packet bytes."""
+    name, separator, value_text = spec.partition("=")
+    if not separator or not name.strip():
+        raise ValueError(f"expected field=value, got {spec!r}")
+    name, value_text = name.strip(), value_text.strip()
+    layer_name, _, field_name = name.rpartition(".")
+
+    packet = dissect(data, linktype)
+    target = None
+    for layer in walk_layers(packet):
+        names = {layer.name.lower(), type(layer).__name__.lower()}
+        if layer_name and layer_name.lower() not in names:
+            continue
+        if field_name in [f.name for f in layer.fields_desc]:
+            target = layer
+            break
+    if target is None:
+        raise ValueError(f"no layer with a field called {name!r}")
+
+    try:
+        value = int(value_text, 0)
+    except ValueError:
+        value = value_text.strip("'\"")
+    setattr(target, field_name, value)
+    return fix_bytes(raw(packet), linktype, keep=(target, field_name))
+
+
+def filter_indices(datas, linktype, expr):
+    """1-based indices of packets matching a layer name or Python expression."""
+    namespace = scapy_namespace()
+    bare = namespace.get(expr.strip())
+    matches, first_error = [], None
+    for index, data in enumerate(datas, start=1):
+        packet = dissect(data, linktype)
+        try:
+            if isinstance(bare, type) and issubclass(bare, Packet):
+                matched = packet.haslayer(bare)
+            else:
+                matched = bool(eval(expr, namespace, {"p": packet, "pkt": packet}))
+        except Exception as error:
+            first_error = first_error or error
+            matched = False
+        if matched:
+            matches.append(index)
+    if not matches and first_error is not None:
+        raise ValueError(f"filter failed: {first_error}")
+    return matches
+
+
+def session_key(packet: Packet):
+    """Bidirectional conversation key, or None for sessionless packets."""
+    from scapy.all import IP, IPv6, TCP, UDP
+
+    network = packet.getlayer(IP) or packet.getlayer(IPv6)
+    transport = packet.getlayer(TCP) or packet.getlayer(UDP)
+    if network is None or transport is None:
+        return None
+    ends = sorted([(network.src, transport.sport), (network.dst, transport.dport)])
+    return (type(transport).__name__, tuple(ends))
+
+
+def follow_stream(datas, linktype, index):
+    """Packets in the same conversation as packet `index`, plus its payloads."""
+    packets = [dissect(data, linktype) for data in datas]
+    wanted = session_key(packets[index - 1])
+    if wanted is None:
+        raise ValueError("packet has no TCP/UDP conversation to follow")
+    first_source = None
+    indices, lines = [], [f"{wanted[0]} {wanted[1][0]} <> {wanted[1][1]}", ""]
+    for position, packet in enumerate(packets, start=1):
+        if session_key(packet) != wanted:
+            continue
+        indices.append(position)
+        from scapy.all import TCP, UDP
+
+        transport = packet.getlayer(TCP) or packet.getlayer(UDP)
+        payload = raw(transport.payload)
+        if not payload:
+            continue
+        source = packet.payload.src if hasattr(packet.payload, "src") else ""
+        if first_source is None:
+            first_source = source
+        arrow = "->" if source == first_source else "<-"
+        for text_line in payload.decode("utf-8", errors="replace").splitlines():
+            lines.append(f"{arrow} {text_line}")
+    return indices, lines
+
+
+def grep_payloads(datas, pattern):
+    """(index, byte offset, printable context) for each regex match."""
+    import re
+
+    regex = re.compile(pattern.encode("utf-8", errors="ignore"))
+    matches = []
+    for index, data in enumerate(datas, start=1):
+        for match in regex.finditer(data):
+            context = data[match.start():match.start() + 32]
+            printable = "".join(
+                chr(b) if 32 <= b < 127 else "." for b in context
+            )
+            matches.append([index, match.start(), printable])
+    return matches
+
+
+def capture_stats(datas, linktype, times):
+    """Human-readable overview of the capture."""
+    from collections import Counter
+
+    from scapy.all import IP, IPv6, TCP, UDP
+
+    stacks, talkers, ports = Counter(), Counter(), Counter()
+    total_bytes = 0
+    for data in datas:
+        total_bytes += len(data)
+        packet = dissect(data, linktype)
+        stacks[" / ".join(l.name for l in walk_layers(packet))] += 1
+        network = packet.getlayer(IP) or packet.getlayer(IPv6)
+        if network is not None:
+            talkers[f"{network.src} -> {network.dst}"] += 1
+        transport = packet.getlayer(TCP) or packet.getlayer(UDP)
+        if transport is not None:
+            ports[f"{type(transport).__name__} {transport.dport}"] += 1
+
+    duration = ""
+    if len(times) >= 2:
+        try:
+            span = Decimal(times[-1]) - Decimal(times[0])
+            duration = f" over {span}s"
+        except Exception:
+            pass
+    lines = [f"{len(datas)} packets, {total_bytes} bytes{duration}", ""]
+    for title, counter in (("Protocols", stacks), ("Conversations", talkers),
+                           ("Ports", ports)):
+        lines.append(title)
+        for key, count in counter.most_common(10):
+            lines.append(f"  {count:5d}  {key}")
+        lines.append("")
+    return lines
+
+
+def anonymise(datas, linktype):
+    """Consistently rewrite MAC and IP addresses across the capture.
+
+    Payload contents (DNS names, HTTP hosts, ...) are left alone; checksums
+    are recomputed. The mapping is per-run, so repeat runs differ.
+    """
+    from scapy.all import ARP, IP, IPv6, Ether
+
+    macs, ips = {}, {}
+
+    def new_mac(mac):
+        if mac not in macs:
+            macs[mac] = f"02:00:00:00:00:{len(macs) + 1:02x}"
+        return macs[mac]
+
+    def new_ip(address):
+        if address not in ips:
+            count = len(ips) + 1
+            ips[address] = (
+                f"fd00::{count:x}" if ":" in address
+                else f"10.99.{count // 256}.{count % 256}"
+            )
+        return ips[address]
+
+    results = []
+    for data in datas:
+        packet = dissect(data, linktype)
+        for layer in walk_layers(packet):
+            if isinstance(layer, Ether):
+                layer.src, layer.dst = new_mac(layer.src), new_mac(layer.dst)
+            elif isinstance(layer, (IP, IPv6)):
+                layer.src, layer.dst = new_ip(layer.src), new_ip(layer.dst)
+            elif isinstance(layer, ARP):
+                layer.hwsrc, layer.hwdst = new_mac(layer.hwsrc), new_mac(layer.hwdst)
+                layer.psrc, layer.pdst = new_ip(layer.psrc), new_ip(layer.pdst)
+        results.append(fix_bytes(raw(packet), linktype))
+    return results
 
 
 def annotate(datas, linktype, limit, times, wirelens):
@@ -164,6 +419,7 @@ def annotate(datas, linktype, limit, times, wirelens):
             try:
                 entry["s"] = packet.summary()
                 entry["layers"], entry["fields"] = layer_and_field_ranges(packet)
+                entry["bad"] = bad_checksums(data, linktype)
             except Exception:
                 entry["s"] = f"Raw ({len(data)} bytes)"
                 entry["layers"] = [[0, len(data), "Raw"]]
@@ -279,52 +535,284 @@ def cmd_summary(args) -> None:
         print(dissect(data, args.linktype, args.proto).summary())
 
 
+def handle_request(request: dict) -> dict:
+    """Dispatch one JSON request from the plugin and build its response."""
+    operation = request.get("op")
+    linktype = int(request.get("linktype", DEFAULT_LINKTYPE))
+    limit = int(request.get("limit", 2000))
+
+    def packets_in(key="packets"):
+        return [bytes.fromhex(h.replace(" ", "")) for h in request.get(key, [])]
+
+    def single():
+        return bytes.fromhex(request.get("hex", "").replace(" ", ""))
+
+    if operation == "packet":
+        meta = annotate([single()], linktype, 1,
+                        [str(request.get("t", "0"))],
+                        [int(request.get("wl", 0))])
+        return {"packet": meta["packets"][0]}
+    if operation == "annotate":
+        return annotate(packets_in(), linktype, limit,
+                        [str(t) for t in request.get("times", [])],
+                        [int(w) for w in request.get("wirelens", [])])
+    if operation == "show":
+        packet = dissect(single(), linktype, request.get("proto") or None)
+        dump = packet.summary() + "\n" + packet.show(dump=True)
+        return {"lines": dump.splitlines()}
+    if operation == "fix":
+        fixed = [fix_bytes(data, linktype) for data in packets_in()]
+        return {"packets": [data.hex(" ") for data in fixed]}
+    if operation == "setfield":
+        return {"hex": set_field(single(), linktype, request.get("spec", "")).hex(" ")}
+    if operation == "craft":
+        result = eval(request.get("expr", ""), scapy_namespace())
+        if not isinstance(result, Packet):
+            raise ValueError("expression did not produce a scapy packet")
+        return {"hex": raw(result).hex(" ")}
+    if operation == "command":
+        return {"command": dissect(single(), linktype).command()}
+    if operation == "filter":
+        return {"indices": filter_indices(packets_in(), linktype,
+                                          request.get("expr", ""))}
+    if operation == "follow":
+        indices, lines = follow_stream(packets_in(), linktype,
+                                       int(request.get("index", 1)))
+        return {"indices": indices, "lines": lines}
+    if operation == "grep":
+        return {"matches": grep_payloads(packets_in(), request.get("pattern", ""))}
+    if operation == "stats":
+        return {"lines": capture_stats(packets_in(), linktype,
+                                       [str(t) for t in request.get("times", [])])}
+    if operation == "anon":
+        return {"packets": [data.hex(" ") for data in anonymise(packets_in(), linktype)]}
+    if operation == "ping":
+        return {"ok": True}
+    return {"error": f"unknown op: {operation!r}"}
+
+
+def safe_handle(request: dict) -> dict:
+    try:
+        return handle_request(request)
+    except SystemExit:  # fail() from a bad protocol name must not kill us
+        return {"error": "bad request"}
+    except Exception as error:
+        return {"error": str(error)}
+
+
 def cmd_serve(args) -> None:
-    """Serve annotation requests as JSON lines over stdin/stdout.
+    """Serve requests as JSON lines over stdin/stdout.
 
     Keeps scapy imported between requests so the plugin can re-dissect
     packets live while the user edits. One request per line; always answers
     with exactly one JSON line and never exits on bad input.
     """
     for line in sys.stdin:
-        response = {}
         try:
-            request = json.loads(line)
-            operation = request.get("op")
-            linktype = int(request.get("linktype", DEFAULT_LINKTYPE))
-            limit = int(request.get("limit", 2000))
-            if operation == "packet":
-                data = bytes.fromhex(request.get("hex", "").replace(" ", ""))
-                meta = annotate(
-                    [data],
-                    linktype,
-                    1,
-                    [str(request.get("t", "0"))],
-                    [int(request.get("wl", 0))],
-                )
-                response = {"packet": meta["packets"][0]}
-            elif operation == "annotate":
-                datas = [
-                    bytes.fromhex(h.replace(" ", ""))
-                    for h in request.get("packets", [])
-                ]
-                times = [str(t) for t in request.get("times", [])]
-                wirelens = [int(w) for w in request.get("wirelens", [])]
-                response = annotate(datas, linktype, limit, times, wirelens)
-            elif operation == "show":
-                data = bytes.fromhex(request.get("hex", "").replace(" ", ""))
-                packet = dissect(data, linktype, request.get("proto") or None)
-                dump = packet.summary() + "\n" + packet.show(dump=True)
-                response = {"lines": dump.splitlines()}
-            elif operation == "ping":
-                response = {"ok": True}
-            else:
-                response = {"error": f"unknown op: {operation!r}"}
-        except SystemExit:  # fail() from a bad protocol name must not kill us
+            response = safe_handle(json.loads(line))
+        except ValueError:
             response = {"error": "bad request"}
-        except Exception as error:  # the daemon must survive malformed input
-            response = {"error": str(error)}
         print(json.dumps(response, separators=(",", ":")), flush=True)
+
+
+def cmd_rpc(args) -> None:
+    """Answer a single JSON request: the subprocess fallback for 'serve'."""
+    response = safe_handle(json.loads(sys.stdin.readline() or "{}"))
+    print(json.dumps(response, separators=(",", ":")))
+
+
+AGENT_TOOLS = [
+    ("overview", "Capture overview: file, link type, packet count and summaries.",
+     {}, []),
+    ("packets", "Hex bytes and annotations for a range of packets.",
+     {"from": {"type": "integer"}, "to": {"type": "integer"}}, ["from"]),
+    ("detail", "Full scapy dissection tree for one packet.",
+     {"index": {"type": "integer"}}, ["index"]),
+    ("goto", "Move the user's cursor to a packet (and byte offset); every "
+     "pane follows. Returns the field under the cursor. Use this while "
+     "discussing a packet so the user sees what you mean.",
+     {"index": {"type": "integer"}, "byte": {"type": "integer"}}, ["index"]),
+    ("set_field", "Set a protocol field by name on one packet, e.g. spec "
+     "'IP.ttl=12'. Checksums and lengths are recomputed.",
+     {"index": {"type": "integer"}, "spec": {"type": "string"}},
+     ["index", "spec"]),
+    ("fix", "Recompute checksums and length fields for a packet range.",
+     {"from": {"type": "integer"}, "to": {"type": "integer"}}, []),
+    ("replace", "Replace one packet's bytes with new space-separated hex.",
+     {"index": {"type": "integer"}, "hex": {"type": "string"}},
+     ["index", "hex"]),
+    ("insert", "Insert a packet after position 'after' (0 = top), from a "
+     "scapy expression like Ether()/IP()/ICMP().",
+     {"after": {"type": "integer"}, "expr": {"type": "string"}}, ["expr"]),
+    ("delete", "Delete one packet.",
+     {"index": {"type": "integer"}}, ["index"]),
+    ("filter", "Fold the view to packets matching a layer name ('DNS') or "
+     "Python expression over p ('p[TCP].dport == 80').",
+     {"expr": {"type": "string"}}, ["expr"]),
+    ("clear_filter", "Clear the current filter/fold.", {}, []),
+    ("follow", "Fold to one packet's TCP/UDP conversation and show the "
+     "reassembled stream.", {"index": {"type": "integer"}}, ["index"]),
+    ("grep", "Regex-search decoded payloads; returns packet/byte matches.",
+     {"pattern": {"type": "string"}}, ["pattern"]),
+    ("stats", "Protocol, conversation and port statistics.", {}, []),
+    ("ex", "Run a raw Vim ex command (only if the user has enabled "
+     "g:vimcap_agent_raw).", {"command": {"type": "string"}}, ["command"]),
+]
+
+
+def cmd_mcp(args) -> None:
+    """MCP stdio server bridging an agent (e.g. Claude Code) to a Vim session.
+
+    The agent's client spawns this process; Vim polls the session file for
+    the port, connects, and authenticates with the token. Tool calls are
+    forwarded over Vim's JSON channel protocol as calls to
+    vimcap#agent#dispatch(), so the agent only reaches the operations that
+    function exposes.
+    """
+    import os
+    import secrets
+    import select
+    import socket
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    token = secrets.token_hex(16)
+    session = Path(args.session)
+    session.write_text(json.dumps(
+        {"port": listener.getsockname()[1], "token": token}))
+    session.chmod(0o600)
+
+    vim, vim_authed, vim_buffer = None, False, ""
+    stdin_fd, stdin_buffer = sys.stdin.fileno(), ""
+    pending, next_call_id = {}, 1
+    decoder = json.JSONDecoder()
+
+    def reply(request_id, result=None, error=None):
+        message = {"jsonrpc": "2.0", "id": request_id}
+        message["error" if error else "result"] = error or result
+        print(json.dumps(message), flush=True)
+
+    def tool_result(request_id, payload):
+        is_error = isinstance(payload, dict) and "error" in payload
+        text = payload if isinstance(payload, str) else json.dumps(
+            payload, indent=2, default=str)
+        reply(request_id, result={
+            "content": [{"type": "text", "text": text}], "isError": is_error})
+
+    def handle_vim(message):
+        nonlocal vim_authed
+        if not isinstance(message, list) or len(message) != 2:
+            return
+        call_id, payload = message
+        if isinstance(payload, dict) and "auth" in payload:
+            vim_authed = payload["auth"] == token
+            vim.sendall((json.dumps([call_id, "ok" if vim_authed else "bad token"])
+                         + "\n").encode())
+        elif call_id in pending:
+            tool_result(pending.pop(call_id), payload)
+
+    def handle_mcp(request):
+        nonlocal next_call_id
+        request_id, method = request.get("id"), request.get("method", "")
+        params = request.get("params", {})
+        if method == "initialize":
+            reply(request_id, result={
+                "protocolVersion": params.get("protocolVersion", "2024-11-05"),
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "vimcap", "version": "1.0"}})
+        elif method == "tools/list":
+            reply(request_id, result={"tools": [
+                {"name": name, "description": description,
+                 "inputSchema": {"type": "object", "properties": properties,
+                                 "required": required}}
+                for name, description, properties, required in AGENT_TOOLS]})
+        elif method == "tools/call":
+            if vim is None or not vim_authed:
+                tool_result(request_id,
+                            {"error": "vim has not connected to this session yet"})
+                return
+            call = [["call", "vimcap#agent#dispatch",
+                     [params.get("name", ""), params.get("arguments", {})],
+                     next_call_id]]
+            pending[next_call_id] = request_id
+            next_call_id += 1
+            vim.sendall((json.dumps(call[0]) + "\n").encode())
+        elif method == "ping":
+            reply(request_id, result={})
+        elif request_id is not None:
+            reply(request_id, error={"code": -32601,
+                                     "message": f"unknown method {method}"})
+
+    while True:
+        sources = [stdin_fd, listener] + ([vim] if vim else [])
+        readable, _, _ = select.select(sources, [], [])
+        if stdin_fd in readable:
+            # Read at the raw fd level: a buffered readline() would strand
+            # later messages in Python's buffer where select cannot see them.
+            chunk = os.read(stdin_fd, 65536)
+            if not chunk:
+                break
+            stdin_buffer += chunk.decode("utf-8", errors="replace")
+            while "\n" in stdin_buffer:
+                line, stdin_buffer = stdin_buffer.split("\n", 1)
+                if not line.strip():
+                    continue
+                try:
+                    handle_mcp(json.loads(line))
+                except ValueError:
+                    pass
+        if listener in readable:
+            connection, _ = listener.accept()
+            if vim is None:
+                vim = connection
+            else:
+                connection.close()
+        if vim is not None and vim in readable:
+            data = vim.recv(65536)
+            if not data:
+                vim, vim_authed = None, False
+                continue
+            vim_buffer += data.decode("utf-8", errors="replace")
+            while vim_buffer.strip():
+                try:
+                    message, consumed = decoder.raw_decode(vim_buffer.lstrip())
+                except ValueError:
+                    break
+                vim_buffer = vim_buffer.lstrip()[consumed:]
+                handle_vim(message)
+    session.unlink(missing_ok=True)
+
+
+def cmd_sniff(args) -> None:
+    """Capture packets from an interface and print them as hex lines."""
+    from scapy.all import sniff
+
+    try:
+        packets = sniff(iface=args.iface or None, count=args.count,
+                        timeout=args.timeout)
+    except PermissionError:
+        fail("sniffing needs capture privileges (try running vim with sudo, "
+             "or grant your user access to the capture device)")
+    except Exception as error:
+        fail(f"sniff failed: {error}")
+    for packet in packets:
+        print(raw(packet).hex(" "))
+
+
+def cmd_send(args) -> None:
+    """Transmit buffer packets on an interface (requires privileges)."""
+    from scapy.all import sendp
+
+    datas = parse_hex_lines(sys.stdin)
+    packets = [dissect(data, args.linktype) for data in datas]
+    try:
+        sendp(packets, iface=args.iface or None, verbose=False)
+    except PermissionError:
+        fail("sending needs raw-socket privileges")
+    except Exception as error:
+        fail(f"send failed: {error}")
+    print(f"{len(packets)} packets sent")
 
 
 def cmd_show(args) -> None:
@@ -365,6 +853,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     serve = commands.add_parser("serve")
     serve.set_defaults(handler=cmd_serve)
+
+    rpc = commands.add_parser("rpc")
+    rpc.set_defaults(handler=cmd_rpc)
+
+    mcp = commands.add_parser("mcp")
+    mcp.add_argument("--session", required=True)
+    mcp.set_defaults(handler=cmd_mcp)
+
+    sniff = commands.add_parser("sniff")
+    sniff.add_argument("--iface", default="")
+    sniff.add_argument("--count", type=int, default=10)
+    sniff.add_argument("--timeout", type=int, default=15)
+    sniff.set_defaults(handler=cmd_sniff)
+
+    send = common(commands.add_parser("send"))
+    send.add_argument("--iface", default="")
+    send.set_defaults(handler=cmd_send)
 
     for name, handler in (
         ("ascii", cmd_ascii),
