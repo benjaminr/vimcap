@@ -58,29 +58,42 @@ Dependencies
 ------------
 
 - Vim 8.2+ (with `+textprop`) or Neovim
-- Python 3.9+ with [Scapy](https://scapy.net/): `pip install scapy`
+- Python 3.7+ (standard library only — this is all the hex editor needs)
+- [Scapy](https://scapy.net/) **(optional)** — unlocks dissection: colours,
+  the field inspector, and the filter/follow/stats/craft toolbox
 
-Vim does not need `+python3`; the helper runs as an external command. If
-scapy lives in a virtualenv, point the plugin at it:
-
-```vim
-let g:vimcap_python = expand('~/.virtualenvs/scapy/bin/python')
-```
+Vim does not need `+python3`; the helper runs as an external command. Without
+scapy you still get a fully working hex editor with byte-faithful saves — just
+no dissection. `:VimcapHealth` reports what was found.
 
 
 Installation
 ------------
 
-Native packages:
+With a plugin manager, add a build hook so scapy is provisioned automatically:
 
-```bash
-mkdir -p ~/.vim/pack/vendor/start/
-cd $_
-git clone https://github.com/benjaminr/vimcap
-vim -u NONE -c "helptags vimcap/doc" -c q
+```vim
+" vim-plug
+Plug 'benjaminr/vimcap', { 'do': './install.sh' }
+```
+```lua
+-- lazy.nvim
+{ 'benjaminr/vimcap', build = './install.sh' }
 ```
 
-Or with any plugin manager, e.g. vim-plug: `Plug 'benjaminr/vimcap'`.
+Or native packages:
+
+```bash
+mkdir -p ~/.vim/pack/vendor/start/ && cd $_
+git clone https://github.com/benjaminr/vimcap
+cd vimcap && ./install.sh        # creates .venv with scapy + help tags
+```
+
+`install.sh` uses [uv](https://docs.astral.sh/uv/) when present, else
+`python3 -m venv`, and the plugin picks the resulting `.venv` up automatically
+— no `g:vimcap_python` needed. (Prefer your own interpreter? Point the plugin
+at it: `let g:vimcap_python = '/path/to/python'`, or skip scapy entirely for
+just the hex editor.)
 
 
 Usage

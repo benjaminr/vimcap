@@ -36,11 +36,18 @@ dissected by scapy:
 2. REQUIREMENTS                                          *vimcap-requirements*
 
   - Vim 8.2+ with |textprop| support, or Neovim
-  - Python 3.9+
-  - scapy (https://scapy.net): `pip install scapy`
+  - Python 3.7+ (standard library only for the hex editor)
+  - scapy (https://scapy.net), optional — unlocks dissection: colours, the
+    field inspector and the filter/follow/stats/craft toolbox
 
-The Python interpreter is found via |g:vimcap_python| and is invoked as an
-external command; Vim does not need to be compiled with |+python3|.
+Without scapy the hex editor still opens, edits and saves captures
+byte-faithfully; only the dissection layer is unavailable. Run the bundled
+install.sh (or `pip install scapy`) to add it.
+
+The Python interpreter is invoked as an external command, so Vim does not
+need |+python3|. When |g:vimcap_python| is unset, vimcap auto-discovers one:
+it prefers the bundled .venv (created by install.sh), then python3/python,
+choosing the first that has scapy. |:VimcapHealth| shows what was found.
 
 ==============================================================================
 3. USAGE                                                        *vimcap-usage*
@@ -113,6 +120,12 @@ dissection tree re-renders for it. The mouse can scroll and focus any pane
                                                               *:VimcapRefresh*
 :VimcapRefresh          Re-dissect the buffer contents to update colours,
                         summaries and field annotations after editing.
+
+                                                               *:VimcapHealth*
+:VimcapHealth           Report the environment vimcap depends on: editor
+                        features, the Python interpreter and scapy version it
+                        found, and whether the agent CLI is present. Available
+                        anywhere, not just in a capture buffer.
 
                                                                   *:VimcapFix*
 :[range]VimcapFix       Recompute checksums and length fields (defaults to
@@ -234,8 +247,10 @@ Set |g:vimcap_byte_motions| to 0 to keep Vim's standard h/l/w/b behaviour.
 6. CONFIGURATION                                        *vimcap-configuration*
 
 g:vimcap_python                                              *g:vimcap_python*
-    Python interpreter used to run the helper script. Point this at a
-    virtualenv that has scapy installed. Default: "python3"
+    Python interpreter used to run the helper script. Leave unset to let
+    vimcap auto-discover one (the bundled .venv, then python3/python,
+    preferring whichever has scapy); set it to pin a specific interpreter.
+    Default: unset (auto-discover)
 
 g:vimcap_byte_motions                                  *g:vimcap_byte_motions*
     Remap h/l to byte motions and w/b to field jumps. Default: 1
