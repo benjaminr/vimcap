@@ -1,3 +1,5 @@
 .venv/
 sample.pcap
 doc/tags
+__pycache__/
+*.pyc
