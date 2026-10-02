@@ -25,7 +25,10 @@ dissected by scapy:
   - the statusline names the exact field under the cursor
     (e.g. "pkt 3/120  byte 0x16  IP.ttl = 64"),
   - |w| and |b| jump between protocol fields instead of words,
-  - |K| opens the full dissection tree for the current packet,
+  - a dissection column on the right shows the full protocol tree for the
+    packet under the cursor, following it as you move; |K| toggles it,
+  - annotations and panes re-dissect automatically as you edit
+    (|vimcap-live|),
   - saving writes a valid capture back, preserving the link type and
     per-packet timestamps (an unedited save is byte-identical).
 
@@ -50,8 +53,14 @@ Edit bytes with ordinary Vim editing: |r| to replace a nibble, |R| to
 overtype a run of bytes, |dd| to delete a packet, |yy| and |p| to duplicate
 one. Each line must contain an even number of hex digits when you save.
 
-After editing, annotations (colours, field names) describe the bytes as they
-were last dissected; run |:VimcapRefresh| or save the file to re-dissect.
+                                                                 *vimcap-live*
+Annotations update themselves as you edit: changes are debounced briefly
+(|g:vimcap_live_delay|), then the edited packets are re-dissected by a
+persistent helper process, refreshing the layer colours and field names
+almost instantly. In Neovim, or with |g:vimcap_live| disabled, annotations
+go stale on edit instead ("[edited]" in the statusline) until you run
+|:VimcapRefresh| or save. If the helper cannot be started, live updates
+switch themselves off with a warning and editing continues as normal.
 
 Write with |:w| as usual. New packets added at the end inherit the previous
 packet's timestamp.
@@ -61,22 +70,42 @@ packet's timestamp.
 
 All commands are buffer-local to capture buffers.
 
+Panes are laid out around the hex window: the dissection tree and packet
+summaries stack in a column on the right (|g:vimcap_pane_width|), while the
+byte-aligned ASCII, binary and UTF-8 views open underneath. All open panes
+keep themselves up to date as the buffer changes, and all of them track the
+cursor: the ASCII and binary views point at the byte under the hex cursor,
+the summary and UTF-8 views at its packet, and the dissection tree re-renders
+for it. The mouse can scroll and focus any pane (|g:vimcap_mouse|); wheeling
+a line-bound pane scrolls the hex window with it.
+
                                                                 *:VimcapAscii*
-:VimcapAscii            Open a split rendering each byte as printable ASCII,
-                        column-aligned with the hex and bound to its cursor.
+:VimcapAscii            Open a bottom split rendering each byte as printable
+                        ASCII, column-aligned with the hex and bound to its
+                        cursor.
+
+                                                                 *:VimcapBits*
+:VimcapBits             Open a bottom split rendering each byte as binary:
+                        █ for a set bit, · for a clear one, most significant
+                        bit first, one group per byte. Colours come from
+                        the VimcapBitOn / VimcapBitOff highlight groups.
 
                                                                  *:VimcapUtf8*
-:VimcapUtf8             Open a split with each packet decoded as UTF-8 text.
+:VimcapUtf8             Open a bottom split with each packet decoded as
+                        UTF-8 text.
 
                                                               *:VimcapSummary*
-:VimcapSummary [proto]  Open a split with scapy's one-line summary per
+:VimcapSummary [proto]  Open a pane with scapy's one-line summary per
                         packet, scroll-bound to the hex window. With [proto]
                         (e.g. "IP"), dissection starts at that protocol
                         instead of the capture's link type.
 
                                                                *:VimcapDetail*
 :VimcapDetail [proto]   Show the full scapy dissection tree (packet.show())
-                        for the packet under the cursor. Also on |K|.
+                        for the packet under the cursor. The pane opens
+                        automatically when a capture loads
+                        (|g:vimcap_auto_panes|), follows the cursor from
+                        packet to packet, and |K| toggles it.
 
                                                               *:VimcapRefresh*
 :VimcapRefresh          Re-dissect the buffer contents to update colours,
@@ -99,8 +128,9 @@ Normal mode (buffer-local):
 
     h / l           move one byte left/right
     w / b           jump to the next/previous protocol field
-    K               dissection tree for the current packet (|:VimcapDetail|)
+    K               toggle the dissection pane (|:VimcapDetail|)
     >a              ASCII pane (|:VimcapAscii|)
+    >b              binary pane (|:VimcapBits|)
     >u              UTF-8 pane (|:VimcapUtf8|)
     >s              summary pane (|:VimcapSummary|)
 
@@ -134,6 +164,31 @@ g:vimcap_annotate_limit                              *g:vimcap_annotate_limit*
 g:vimcap_default_linktype                          *g:vimcap_default_linktype*
     Link type used when creating a capture from an empty buffer.
     Default: 1 (Ethernet)
+
+g:vimcap_live                                                  *g:vimcap_live*
+    Re-dissect packets automatically as the buffer changes (|vimcap-live|).
+    Default: 1
+
+g:vimcap_live_delay                                      *g:vimcap_live_delay*
+    Milliseconds of idle time after an edit before re-dissection runs.
+    Default: 300
+
+g:vimcap_live_timeout                                  *g:vimcap_live_timeout*
+    Milliseconds to wait for the helper daemon before giving up and
+    disabling live updates. Default: 3000
+
+g:vimcap_auto_panes                                      *g:vimcap_auto_panes*
+    Panes opened automatically when a capture loads, from "detail",
+    "ascii", "bits", "summary" and "utf8". Set to [] to open nothing.
+    Default: ['detail', 'ascii', 'bits']
+
+g:vimcap_mouse                                                *g:vimcap_mouse*
+    Enable the mouse (:set mouse=a) when a capture loads, so panes can be
+    scrolled and focused by pointing at them. Only applies when 'mouse' is
+    empty, so an existing preference always wins. Default: 1
+
+g:vimcap_pane_width                                      *g:vimcap_pane_width*
+    Width of the right-hand pane column. Default: 64
 
 ==============================================================================
 7. HIGHLIGHTING                                          *vimcap-highlighting*

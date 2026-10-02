@@ -12,8 +12,14 @@ edit like any other text — except vimcap knows what the bytes *mean*:
   cursor as you move: `pkt 3/120  byte 0x16  IP.ttl = 64`.
 - **Fields are words** — `w` and `b` jump between protocol fields; `h` and
   `l` move a byte at a time.
-- **`K` to dissect** — the full scapy dissection tree for the packet under
-  the cursor, in a split.
+- **Hex-editor layout** — opening a capture lays out the workspace for you:
+  the scapy protocol tree in a column on the right (`K` toggles it) with
+  ASCII and binary views underneath. Every pane tracks the cursor — the
+  byte under it is highlighted in the binary view, the tree re-renders per
+  packet — and the mouse can scroll any pane.
+- **Live re-dissection** — edit a byte and the colours, field names,
+  summaries and open panes update themselves moments later, served by a
+  persistent scapy process (sub-millisecond per packet once warm).
 - **Faithful saves** — `:w` writes a valid capture preserving the link type
   and per-packet timestamps; saving an unedited buffer is byte-identical to
   the original.
@@ -60,12 +66,13 @@ vim capture.pcap
 
 | Key / command        | Action                                              |
 |----------------------|-----------------------------------------------------|
-| `K`                  | Dissection tree for the packet under the cursor     |
+| `K`                  | Toggle the dissection pane (follows the cursor)     |
 | `w` / `b`            | Next / previous protocol field                      |
 | `h` / `l`            | Previous / next byte                                |
-| `>a` / `:VimcapAscii`| ASCII pane, column-aligned and cursor-bound         |
+| `>a` / `:VimcapAscii`| ASCII pane below the hex, column-aligned            |
+| `>b` / `:VimcapBits` | Binary pane: `█·█·█·█·` per byte, coloured bits     |
 | `>s` / `:VimcapSummary` | One-line scapy summary per packet, scroll-bound  |
-| `>u` / `:VimcapUtf8` | Packets decoded as UTF-8                            |
+| `>u` / `:VimcapUtf8` | Packets decoded as UTF-8, below the hex             |
 | `K` (visual)         | Interpret selected bytes (hex, ASCII, BE/LE ints)   |
 | `:VimcapGoto 0x14`   | Jump to a byte offset within the packet             |
 | `:VimcapRefresh`     | Re-dissect after editing (also happens on save)     |
@@ -86,6 +93,11 @@ let g:vimcap_byte_motions = 1          " h/l bytes, w/b fields
 let g:vimcap_statusline = 1            " packet/byte/field statusline
 let g:vimcap_highlight = 1             " per-layer colouring
 let g:vimcap_annotate_limit = 2000     " packets to dissect for annotations
+let g:vimcap_live = 1                  " re-dissect automatically while editing
+let g:vimcap_live_delay = 300          " debounce (ms) before re-dissection
+let g:vimcap_auto_panes = ['detail', 'ascii', 'bits']   " panes opened on load
+let g:vimcap_mouse = 1                 " enable the mouse if not configured
+let g:vimcap_pane_width = 64           " width of the right-hand pane column
 ```
 
 Layer colours are ordinary highlight groups (`VimcapLayer0`–`VimcapLayer3`,
