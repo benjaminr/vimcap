@@ -279,6 +279,54 @@ def cmd_summary(args) -> None:
         print(dissect(data, args.linktype, args.proto).summary())
 
 
+def cmd_serve(args) -> None:
+    """Serve annotation requests as JSON lines over stdin/stdout.
+
+    Keeps scapy imported between requests so the plugin can re-dissect
+    packets live while the user edits. One request per line; always answers
+    with exactly one JSON line and never exits on bad input.
+    """
+    for line in sys.stdin:
+        response = {}
+        try:
+            request = json.loads(line)
+            operation = request.get("op")
+            linktype = int(request.get("linktype", DEFAULT_LINKTYPE))
+            limit = int(request.get("limit", 2000))
+            if operation == "packet":
+                data = bytes.fromhex(request.get("hex", "").replace(" ", ""))
+                meta = annotate(
+                    [data],
+                    linktype,
+                    1,
+                    [str(request.get("t", "0"))],
+                    [int(request.get("wl", 0))],
+                )
+                response = {"packet": meta["packets"][0]}
+            elif operation == "annotate":
+                datas = [
+                    bytes.fromhex(h.replace(" ", ""))
+                    for h in request.get("packets", [])
+                ]
+                times = [str(t) for t in request.get("times", [])]
+                wirelens = [int(w) for w in request.get("wirelens", [])]
+                response = annotate(datas, linktype, limit, times, wirelens)
+            elif operation == "show":
+                data = bytes.fromhex(request.get("hex", "").replace(" ", ""))
+                packet = dissect(data, linktype, request.get("proto") or None)
+                dump = packet.summary() + "\n" + packet.show(dump=True)
+                response = {"lines": dump.splitlines()}
+            elif operation == "ping":
+                response = {"ok": True}
+            else:
+                response = {"error": f"unknown op: {operation!r}"}
+        except SystemExit:  # fail() from a bad protocol name must not kill us
+            response = {"error": "bad request"}
+        except Exception as error:  # the daemon must survive malformed input
+            response = {"error": str(error)}
+        print(json.dumps(response, separators=(",", ":")), flush=True)
+
+
 def cmd_show(args) -> None:
     """Print scapy's full dissection tree for a single packet."""
     datas = parse_hex_lines(sys.stdin)
@@ -314,6 +362,9 @@ def build_parser() -> argparse.ArgumentParser:
     annotate_cmd.add_argument("--meta", required=True)
     common(annotate_cmd)
     annotate_cmd.set_defaults(handler=cmd_annotate)
+
+    serve = commands.add_parser("serve")
+    serve.set_defaults(handler=cmd_serve)
 
     for name, handler in (
         ("ascii", cmd_ascii),
