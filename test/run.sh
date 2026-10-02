@@ -132,6 +132,36 @@ print(("ok   " if ttl_ok else "FAIL ") + f"edited ttl persisted (ttl={packets[0]
 print(("ok   " if time_ok else "FAIL ") + f"timestamp preserved ({packets[0].time})")
 PYEOF
 
+# The pure-Python path (no scapy) must still round-trip byte-identically.
+# Only runs when an interpreter without scapy is available.
+noscapy=""
+for candidate in python3 python; do
+  if command -v "$candidate" >/dev/null 2>&1 && \
+     ! "$candidate" -c 'import scapy' >/dev/null 2>&1; then
+    noscapy="$candidate"
+    break
+  fi
+done
+if [[ -n "$noscapy" ]]; then
+  "$noscapy" "$root/python/vimcap.py" load "$work/original.pcap" \
+    --meta "$work/ns.json" > "$work/ns.hex" 2>/dev/null
+  "$noscapy" "$root/python/vimcap.py" save "$work/ns.pcap" \
+    --meta "$work/ns.json" < "$work/ns.hex" >/dev/null 2>&1
+  if cmp -s "$work/original.pcap" "$work/ns.pcap"; then
+    echo "ok   pure-Python path round-trips byte-identically (no scapy)" >> "$work/all.txt"
+  else
+    echo "FAIL pure-Python path does not round-trip without scapy" >> "$work/all.txt"
+  fi
+  if echo '{"op":"show","hex":"aabb","linktype":1}' \
+     | "$noscapy" "$root/python/vimcap.py" rpc 2>/dev/null | grep -q '"error"'; then
+    echo "ok   dissection ops error gracefully without scapy" >> "$work/all.txt"
+  else
+    echo "FAIL dissection ops do not degrade gracefully without scapy" >> "$work/all.txt"
+  fi
+else
+  echo "ok   (no scapy-free interpreter available; skipped pure-Python checks)" >> "$work/all.txt"
+fi
+
 cat "$work/all.txt"
 if grep -q '^FAIL' "$work/all.txt"; then
   exit 1

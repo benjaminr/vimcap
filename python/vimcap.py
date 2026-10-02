@@ -7,9 +7,12 @@ hex lines on stdin and/or a capture file, and communicates annotations
 so that saving a buffer round-trips the original capture faithfully.
 """
 
+from __future__ import annotations  # scapy types in signatures stay unevaluated
+
 import argparse
 import json
 import logging
+import struct
 import sys
 from decimal import Decimal
 from pathlib import Path
@@ -30,21 +33,90 @@ def warn(message: str) -> None:
 logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 logging.getLogger("scapy.loading").setLevel(logging.ERROR)
 
+# scapy is optional: without it the hex editor still opens, edits and saves
+# captures byte-faithfully through the pure-Python pcap reader/writer below;
+# scapy only unlocks dissection (colours, the field inspector, and the
+# filter/follow/stats/craft toolbox).
 try:
     import scapy.all  # noqa: F401  (registers every protocol layer)
     from scapy.compat import raw
     from scapy.config import conf
     from scapy.packet import NoPayload, Packet, Raw
     from scapy.utils import PcapReader, RawPcapWriter
+
+    HAS_SCAPY = True
 except ImportError:
-    fail(
-        "scapy is required (pip install scapy); "
-        "set g:vimcap_python to an interpreter that has it"
-    )
+    HAS_SCAPY = False
+
+
+def require_scapy(feature: str = "this operation") -> None:
+    """Abort with a helpful message when a scapy-only feature is requested."""
+    if not HAS_SCAPY:
+        fail(f"{feature} needs scapy (pip install scapy, or run the plugin's "
+             "install.sh); the hex editor works without it")
 
 MAX_FIELD_VALUE_LEN = 48
 DEFAULT_LINKTYPE = 1  # DLT_EN10MB (Ethernet)
 PAYLOAD_LAYERS = {"Raw", "Padding"}
+
+
+# --- pure-Python classic-pcap I/O (the no-scapy round-trip path) -----------
+
+PCAP_GLOBAL_HEADER = struct.Struct("<IHHIIII")  # magic, maj, min, zone, sig, snap, net
+PCAP_RECORD_HEADER = struct.Struct("<IIII")     # ts_sec, ts_frac, caplen, origlen
+
+
+def native_read(path):
+    """Read a classic pcap without scapy.
+
+    Returns (linktype, datas, times, wirelens). Raises ValueError on anything
+    that is not classic pcap (e.g. pcapng), which still requires scapy.
+    """
+    blob = Path(path).read_bytes()
+    if len(blob) < 24:
+        raise ValueError("file too short to be a pcap")
+    magic = blob[:4]
+    endian = {b"\xd4\xc3\xb2\xa1": "<", b"\x4d\x3c\xb2\xa1": "<",
+              b"\xa1\xb2\xc3\xd4": ">", b"\xa1\xb2\x3c\x4d": ">"}.get(magic)
+    if endian is None:
+        raise ValueError("not a classic pcap file (pcapng requires scapy)")
+    nano = magic in (b"\x4d\x3c\xb2\xa1", b"\xa1\xb2\x3c\x4d")
+    header = struct.Struct(endian + "IHHIIII")
+    record = struct.Struct(endian + "IIII")
+    linktype = header.unpack_from(blob, 0)[6]
+
+    datas, times, wirelens = [], [], []
+    offset = 24
+    while offset + record.size <= len(blob):
+        ts_sec, ts_frac, caplen, origlen = record.unpack_from(blob, offset)
+        offset += record.size
+        datas.append(blob[offset:offset + caplen])
+        offset += caplen
+        times.append(f"{ts_sec}.{ts_frac:0{9 if nano else 6}d}")
+        wirelens.append(origlen)
+    return linktype, datas, times, wirelens
+
+
+def native_write(path, linktype, records) -> None:
+    """Write a classic pcap without scapy, matching scapy's global header.
+
+    `records` is an iterable of (data, sec, usec, wirelen). The header is the
+    same microsecond-resolution, 65535-snaplen form scapy's writer emits, so
+    output is byte-identical to the scapy path for scapy-written inputs.
+    """
+    out = bytearray(PCAP_GLOBAL_HEADER.pack(0xA1B2C3D4, 2, 4, 0, 0, 65535, linktype))
+    for data, sec, usec, wirelen in records:
+        out += PCAP_RECORD_HEADER.pack(sec, usec, len(data), wirelen)
+        out += data
+    Path(path).write_bytes(out)
+
+
+def packet_record(times, wirelens, index, data):
+    """Resolve one packet's (sec, usec, wirelen) for writing."""
+    stamp = Decimal(time_at(times, index))
+    seconds = int(stamp)
+    microseconds = int((stamp - seconds) * 1_000_000)
+    return seconds, microseconds, wirelen_at(wirelens, index, len(data))
 
 
 def parse_hex_lines(lines) -> list:
@@ -449,7 +521,7 @@ def annotate(datas, linktype, limit, times, wirelens, trust_wirelens=False):
             "t": time_at(times, index),
             "wl": wirelen_at(wirelens, index, len(data), trust=trust_wirelens),
         }
-        if index < limit:
+        if index < limit and HAS_SCAPY:
             packet = dissect(data, linktype)
             try:
                 entry["s"] = packet.summary()
@@ -485,22 +557,24 @@ def carried_times_and_wirelens(meta):
 
 def cmd_load(args) -> None:
     """Read a capture file, print hex lines, and write the meta sidecar."""
-    packets = []
     try:
-        with PcapReader(args.path) as reader:
-            packets = list(reader)
-        linktype = getattr(reader, "linktype", None)
+        if HAS_SCAPY:
+            with PcapReader(args.path) as reader:
+                packets = list(reader)
+            linktype = getattr(reader, "linktype", None)
+            if linktype is None:
+                # pcapng stores link types per interface; recover it from the
+                # first dissected packet's class, defaulting to Ethernet.
+                first_cls = packets[0].__class__ if packets else None
+                linktype = conf.l2types.layer2num.get(first_cls, DEFAULT_LINKTYPE)
+            datas = [raw(p) for p in packets]
+            times = [str(p.time) for p in packets]
+            wirelens = [getattr(p, "wirelen", None) or len(d)
+                        for p, d in zip(packets, datas)]
+        else:
+            linktype, datas, times, wirelens = native_read(args.path)
     except Exception as error:
         fail(f"could not read {args.path}: {error}")
-    if linktype is None:
-        # pcapng stores link types per interface; recover it from the first
-        # dissected packet's class, defaulting to Ethernet.
-        first_cls = packets[0].__class__ if packets else None
-        linktype = conf.l2types.layer2num.get(first_cls, DEFAULT_LINKTYPE)
-
-    datas = [raw(p) for p in packets]
-    times = [str(p.time) for p in packets]
-    wirelens = [getattr(p, "wirelen", None) or len(d) for p, d in zip(packets, datas)]
 
     meta = annotate(datas, linktype, args.limit, times, wirelens, trust_wirelens=True)
     write_meta(args.meta, meta)
@@ -521,15 +595,19 @@ def cmd_save(args) -> None:
 
     temp_path = args.path + ".vimcap.tmp"
     try:
-        writer = RawPcapWriter(temp_path, linktype=linktype, sync=True)
-        writer.write_header(None)
-        for index, data in enumerate(datas):
-            stamp = Decimal(time_at(times, index))
-            seconds = int(stamp)
-            microseconds = int((stamp - seconds) * 1_000_000)
-            wirelen = wirelen_at(wirelens, index, len(data))
-            writer.write_packet(data, sec=seconds, usec=microseconds, wirelen=wirelen)
-        writer.close()
+        if HAS_SCAPY:
+            writer = RawPcapWriter(temp_path, linktype=linktype, sync=True)
+            writer.write_header(None)
+            for index, data in enumerate(datas):
+                seconds, microseconds, wirelen = packet_record(
+                    times, wirelens, index, data)
+                writer.write_packet(data, sec=seconds, usec=microseconds,
+                                    wirelen=wirelen)
+            writer.close()
+        else:
+            native_write(temp_path, linktype, (
+                (data,) + packet_record(times, wirelens, index, data)
+                for index, data in enumerate(datas)))
         Path(temp_path).replace(args.path)
     except OSError as error:
         fail(f"could not write {args.path}: {error}")
@@ -562,8 +640,13 @@ def cmd_utf8(args) -> None:
 
 def cmd_summary(args) -> None:
     """Print a one-line scapy summary per packet."""
+    require_scapy("summaries")
     for data in parse_hex_lines(sys.stdin):
         print(dissect(data, args.linktype, args.proto).summary())
+
+
+# serve/rpc ops that dissect packets; refused with a clear error without scapy.
+SCAPY_OPS = {"show", "fix", "setfield", "craft", "filter", "follow", "stats", "anon"}
 
 
 def handle_request(request: dict) -> dict:
@@ -571,6 +654,9 @@ def handle_request(request: dict) -> dict:
     operation = request.get("op")
     linktype = int(request.get("linktype", DEFAULT_LINKTYPE))
     limit = int(request.get("limit", 2000))
+
+    if operation in SCAPY_OPS and not HAS_SCAPY:
+        return {"error": "needs scapy (pip install scapy)"}
 
     def packets_in(key="packets"):
         return [bytes.fromhex(h.replace(" ", "")) for h in request.get(key, [])]
@@ -823,6 +909,7 @@ def cmd_mcp(args) -> None:
 
 def cmd_sniff(args) -> None:
     """Capture packets from an interface and print them as hex lines."""
+    require_scapy("sniffing")
     from scapy.all import sniff
 
     try:
@@ -839,6 +926,7 @@ def cmd_sniff(args) -> None:
 
 def cmd_send(args) -> None:
     """Transmit buffer packets on an interface (requires privileges)."""
+    require_scapy("sending")
     from scapy.all import sendp
 
     datas = parse_hex_lines(sys.stdin)
@@ -854,6 +942,7 @@ def cmd_send(args) -> None:
 
 def cmd_show(args) -> None:
     """Print scapy's full dissection tree for a single packet."""
+    require_scapy("the dissection tree")
     datas = parse_hex_lines(sys.stdin)
     if not datas:
         fail("no packet under the cursor")
