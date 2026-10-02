@@ -19,6 +19,11 @@ call s:check(exists('b:vimcap') && b:vimcap.linktype == 1, 'meta sidecar loaded 
 call s:check(b:vimcap.packets[0].layers[1][2] ==# 'IP', 'layer ranges recorded')
 call s:check(b:vimcap.packets[0].s =~# 'TCP', 'packet summary recorded')
 call s:check(&filetype ==# 'vimcap', 'filetype set')
+call s:check(bufwinid(bufnr('vimcap://detail')) > 0
+      \ && bufwinid(bufnr('vimcap://ascii')) > 0
+      \ && bufwinid(bufnr('vimcap://bits')) > 0,
+      \ 'detail, ascii and bits panes open automatically on load')
+call s:check(&mouse ==# 'a', 'mouse support enabled for pane scrolling')
 
 " --- field inspection ----------------------------------------------------
 " Byte 22 (0x16) of packet 1 is IP.ttl (14-byte Ethernet header + offset 8).
@@ -39,7 +44,14 @@ call vimcap#ascii_pane()
 let s:ascii_buf = bufnr('vimcap://ascii')
 call s:check(s:ascii_buf > 0 && getbufline(s:ascii_buf, 1)[0] =~# 'G  E  T',
       \ 'ascii pane renders printable bytes')
-call s:check(&cursorbind && &scrollbind, 'hex window binds to the ascii pane')
+call s:check(&scrollbind, 'hex window scroll-binds to the ascii pane')
+
+" First byte aa = 10101010, second byte bb = 10111011.
+call vimcap#bits_pane()
+let s:bits_buf = bufnr('vimcap://bits')
+call s:check(s:bits_buf > 0
+      \ && getbufline(s:bits_buf, 1)[0] =~# '^█·█·█·█· █·███·██ ',
+      \ 'bits pane renders bytes as block glyphs')
 
 call vimcap#detail()
 let s:detail_buf = bufnr('vimcap://detail')
@@ -51,6 +63,40 @@ call vimcap#summary_pane('')
 let s:summary_buf = bufnr('vimcap://summary')
 call s:check(s:summary_buf > 0 && getbufline(s:summary_buf, 2)[0] =~# 'DNS',
       \ 'summary pane lists one summary per packet')
+
+" Dissection panes live in a right-hand column; the ascii pane sits below
+" the hex window, column-aligned with it. K toggles the detail pane.
+let s:hex_info = getwininfo(bufwinid(bufnr('%')))[0]
+let s:column_cols = map([s:detail_buf, s:summary_buf],
+      \ {_, buf -> getwininfo(bufwinid(buf))[0].wincol})
+call s:check(min(s:column_cols) > s:hex_info.wincol
+      \ && min(s:column_cols) == max(s:column_cols),
+      \ 'dissection panes stack in one column right of the hex window')
+let s:ascii_info = getwininfo(bufwinid(s:ascii_buf))[0]
+call s:check(s:ascii_info.wincol == s:hex_info.wincol
+      \ && s:ascii_info.winrow > s:hex_info.winrow,
+      \ 'ascii pane opens below the hex window')
+
+" The bits pane cursor tracks the byte under the hex cursor; the summary
+" pane follows the packet line.
+call cursor(1, 14 * 3 + 1)
+call vimcap#track_cursor()
+call win_execute(bufwinid(s:bits_buf), 'let g:vimcap_test_vcol = virtcol(".")')
+call s:check(g:vimcap_test_vcol == 14 * 9 + 1,
+      \ 'bits pane cursor tracks the hex byte (vcol=' . g:vimcap_test_vcol . ')')
+call win_execute(bufwinid(s:ascii_buf), 'let g:vimcap_test_acol = virtcol(".")')
+call s:check(g:vimcap_test_acol == 14 * 3 + 1,
+      \ 'ascii pane cursor tracks the hex byte (vcol=' . g:vimcap_test_acol . ')')
+call cursor(2, 1)
+call vimcap#track_cursor()
+call win_execute(bufwinid(s:summary_buf), 'let g:vimcap_test_line = line(".")')
+call s:check(g:vimcap_test_line == 2, 'summary pane follows the packet line')
+call cursor(1, 1)
+call vimcap#detail_toggle()
+call s:check(bufwinid(bufnr('vimcap://detail')) < 0, 'K closes the detail pane')
+call vimcap#detail_toggle()
+call s:check(bufwinid(bufnr('vimcap://detail')) > 0, 'K reopens the detail pane')
+let s:detail_buf = bufnr('vimcap://detail')
 
 " --- visual value ----------------------------------------------------------
 " Select the two TCP destination-port bytes (offset 36-37 = 00 50 = 80).
@@ -75,6 +121,50 @@ call s:check(getline(1)[22 * 3 : 22 * 3 + 1] ==# 'ff', 'buffer edit applied')
 silent write
 call s:check(!&modified, 'buffer marked unmodified after save')
 call s:check(get(b:vimcap.packets[0], 's', '') =~# 'TCP', 'annotations refreshed after save')
+
+" --- live dissection --------------------------------------------------------
+" Rewrite the ttl byte back to 0x40 and flush: the in-memory annotations
+" should update without a save.
+call cursor(1, 22 * 3 + 1)
+normal! R40
+call vimcap#live#flush(bufnr('%'))
+let s:ttl = filter(copy(b:vimcap.packets[0].fields), 'v:val[3] ==# "ttl"')[0][4]
+call s:check(s:ttl ==# '64', 'live update re-dissects an edited byte (ttl=' . s:ttl . ')')
+call s:check(get(b:, 'vimcap_stale', 1) == 0, 'stale flag cleared after live update')
+
+" Open panes must follow live updates: rewrite the 'G' of "GET" (byte 54)
+" to 'Z' and check the ascii pane re-renders.
+call cursor(1, 54 * 3 + 1)
+normal! R5a
+call vimcap#live#flush(bufnr('%'))
+call s:check(getbufline(s:ascii_buf, 1)[0] =~# 'Z  E  T',
+      \ 'ascii pane follows live edits')
+" 0x5a = 01011010
+call s:check(getbufline(s:bits_buf, 1)[0] =~# '·█·██·█·',
+      \ 'bits pane follows live edits')
+call cursor(1, 54 * 3 + 1)
+normal! R47
+call vimcap#live#flush(bufnr('%'))
+call s:check(get(b:, 'vimcap_stale', 1) == 0,
+      \ 'valid re-edit clears the stale flag again')
+
+" The detail pane follows the cursor between packets.
+call cursor(2, 1)
+call vimcap#detail_follow()
+call s:check(join(getbufline(s:detail_buf, 1, '$'), "\n") =~# 'DNS',
+      \ 'detail pane follows the cursor to the DNS packet')
+call cursor(1, 1)
+
+" Structural change: delete the DNS packet and flush; annotations, sidecar
+" and remaining timestamps must follow.
+2delete _
+call vimcap#live#flush(bufnr('%'))
+call s:check(len(b:vimcap.packets) == 1, 'live update tracks packet deletion')
+call s:check(len(getbufline(s:summary_buf, 1, '$')) == 1,
+      \ 'summary pane follows packet deletion')
+let s:sidecar = json_decode(join(readfile(b:vimcap_meta_file), ''))
+call s:check(len(s:sidecar.packets) == 1, 'sidecar rewritten after structural change')
+call s:check(s:sidecar.packets[0].t ==# '1700000000.123456', 'timestamp carried through live update')
 
 call writefile(s:results + ['DONE'], $VIMCAP_TEST_OUT)
 quitall!
