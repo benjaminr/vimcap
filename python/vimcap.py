@@ -14,9 +14,16 @@ import sys
 from decimal import Decimal
 from pathlib import Path
 
-def fail_early(message: str) -> None:
+
+def fail(message: str) -> None:
+    """Report a fatal error to the plugin and exit non-zero."""
     print(f"vimcap: {message}", file=sys.stderr)
     sys.exit(1)
+
+
+def warn(message: str) -> None:
+    """Report a non-fatal warning; the plugin echoes lines mentioning vimcap."""
+    print(f"vimcap: {message}", file=sys.stderr)
 
 
 # Keep scapy's chatter out of stderr: the plugin treats stderr as warnings.
@@ -30,7 +37,7 @@ try:
     from scapy.packet import NoPayload, Packet, Raw
     from scapy.utils import PcapReader, RawPcapWriter
 except ImportError:
-    fail_early(
+    fail(
         "scapy is required (pip install scapy); "
         "set g:vimcap_python to an interpreter that has it"
     )
@@ -38,17 +45,6 @@ except ImportError:
 MAX_FIELD_VALUE_LEN = 48
 DEFAULT_LINKTYPE = 1  # DLT_EN10MB (Ethernet)
 PAYLOAD_LAYERS = {"Raw", "Padding"}
-
-
-def fail(message: str) -> None:
-    """Report a fatal error to the plugin and exit non-zero."""
-    print(f"vimcap: {message}", file=sys.stderr)
-    sys.exit(1)
-
-
-def warn(message: str) -> None:
-    """Report a non-fatal warning; the plugin echoes lines mentioning vimcap."""
-    print(f"vimcap: {message}", file=sys.stderr)
 
 
 def parse_hex_lines(lines) -> list:
@@ -107,6 +103,11 @@ def _format_value(value) -> str:
     return text
 
 
+def printable(data: bytes, separator: str = "") -> str:
+    """Render bytes as printable ASCII, non-printables shown as '.'."""
+    return separator.join(chr(b) if 32 <= b < 127 else "." for b in data)
+
+
 def layer_and_field_ranges(packet: Packet):
     """Compute absolute byte ranges for every layer and field of a packet.
 
@@ -117,8 +118,8 @@ def layer_and_field_ranges(packet: Packet):
     """
     layers = []
     fields = []
-    current, base = packet, 0
-    while isinstance(current, Packet) and not isinstance(current, NoPayload):
+    base = 0
+    for current in walk_layers(packet):
         layer_bytes = raw(current)
         payload_len = len(raw(current.payload)) if current.payload else 0
         header_len = len(layer_bytes) - payload_len
@@ -149,7 +150,6 @@ def layer_and_field_ranges(packet: Packet):
                 [base + start_byte, base + end_byte, current.name, field.name, value]
             )
         base += header_len
-        current = current.payload
     return layers, fields
 
 
@@ -185,10 +185,15 @@ def fix_bytes(data: bytes, linktype: int, keep=None) -> bytes:
         return data
 
 
-def bad_checksums(data: bytes, linktype: int) -> list:
-    """Names of checksum fields that do not match their recomputed values."""
+def bad_checksums(data: bytes, linktype: int, original=None) -> list:
+    """Names of checksum fields that do not match their recomputed values.
+
+    Pass `original` (an already-dissected packet) to avoid re-dissecting when
+    the caller has one to hand.
+    """
     try:
-        original = dissect(data, linktype)
+        if original is None:
+            original = dissect(data, linktype)
         rebuilt = dissect(fix_bytes(data, linktype), linktype)
     except Exception:
         return []
@@ -274,12 +279,24 @@ def filter_indices(datas, linktype, expr):
     return matches
 
 
+def network_layer(packet: Packet):
+    """The IP/IPv6 layer of a packet, or None."""
+    from scapy.all import IP, IPv6
+
+    return packet.getlayer(IP) or packet.getlayer(IPv6)
+
+
+def transport_layer(packet: Packet):
+    """The TCP/UDP layer of a packet, or None."""
+    from scapy.all import TCP, UDP
+
+    return packet.getlayer(TCP) or packet.getlayer(UDP)
+
+
 def session_key(packet: Packet):
     """Bidirectional conversation key, or None for sessionless packets."""
-    from scapy.all import IP, IPv6, TCP, UDP
-
-    network = packet.getlayer(IP) or packet.getlayer(IPv6)
-    transport = packet.getlayer(TCP) or packet.getlayer(UDP)
+    network = network_layer(packet)
+    transport = transport_layer(packet)
     if network is None or transport is None:
         return None
     ends = sorted([(network.src, transport.sport), (network.dst, transport.dport)])
@@ -298,9 +315,7 @@ def follow_stream(datas, linktype, index):
         if session_key(packet) != wanted:
             continue
         indices.append(position)
-        from scapy.all import TCP, UDP
-
-        transport = packet.getlayer(TCP) or packet.getlayer(UDP)
+        transport = transport_layer(packet)
         payload = raw(transport.payload)
         if not payload:
             continue
@@ -322,10 +337,7 @@ def grep_payloads(datas, pattern):
     for index, data in enumerate(datas, start=1):
         for match in regex.finditer(data):
             context = data[match.start():match.start() + 32]
-            printable = "".join(
-                chr(b) if 32 <= b < 127 else "." for b in context
-            )
-            matches.append([index, match.start(), printable])
+            matches.append([index, match.start(), printable(context)])
     return matches
 
 
@@ -333,18 +345,16 @@ def capture_stats(datas, linktype, times):
     """Human-readable overview of the capture."""
     from collections import Counter
 
-    from scapy.all import IP, IPv6, TCP, UDP
-
     stacks, talkers, ports = Counter(), Counter(), Counter()
     total_bytes = 0
     for data in datas:
         total_bytes += len(data)
         packet = dissect(data, linktype)
         stacks[" / ".join(l.name for l in walk_layers(packet))] += 1
-        network = packet.getlayer(IP) or packet.getlayer(IPv6)
+        network = network_layer(packet)
         if network is not None:
             talkers[f"{network.src} -> {network.dst}"] += 1
-        transport = packet.getlayer(TCP) or packet.getlayer(UDP)
+        transport = transport_layer(packet)
         if transport is not None:
             ports[f"{type(transport).__name__} {transport.dport}"] += 1
 
@@ -404,22 +414,34 @@ def anonymise(datas, linktype):
     return results
 
 
+def time_at(times, index) -> str:
+    """Timestamp for a packet, carrying the last known value forward."""
+    if index < len(times):
+        return times[index]
+    return times[-1] if times else "0"
+
+
+def wirelen_at(wirelens, index, data_len) -> int:
+    """Wire length for a packet; falls back to the captured length."""
+    if index < len(wirelens) and data_len <= wirelens[index]:
+        return wirelens[index]
+    return data_len
+
+
 def annotate(datas, linktype, limit, times, wirelens):
     """Build the meta structure for a list of packet byte strings."""
     entries = []
     for index, data in enumerate(datas):
         entry = {
-            "t": times[index] if index < len(times) else (times[-1] if times else "0"),
-            "wl": wirelens[index]
-            if index < len(wirelens) and len(data) <= wirelens[index]
-            else len(data),
+            "t": time_at(times, index),
+            "wl": wirelen_at(wirelens, index, len(data)),
         }
         if index < limit:
             packet = dissect(data, linktype)
             try:
                 entry["s"] = packet.summary()
                 entry["layers"], entry["fields"] = layer_and_field_ranges(packet)
-                entry["bad"] = bad_checksums(data, linktype)
+                entry["bad"] = bad_checksums(data, linktype, original=packet)
             except Exception:
                 entry["s"] = f"Raw ({len(data)} bytes)"
                 entry["layers"] = [[0, len(data), "Raw"]]
@@ -489,14 +511,10 @@ def cmd_save(args) -> None:
         writer = RawPcapWriter(temp_path, linktype=linktype, sync=True)
         writer.write_header(None)
         for index, data in enumerate(datas):
-            stamp = Decimal(times[index] if index < len(times) else (times[-1] if times else "0"))
+            stamp = Decimal(time_at(times, index))
             seconds = int(stamp)
             microseconds = int((stamp - seconds) * 1_000_000)
-            wirelen = (
-                wirelens[index]
-                if index < len(wirelens) and len(data) <= wirelens[index]
-                else len(data)
-            )
+            wirelen = wirelen_at(wirelens, index, len(data))
             writer.write_packet(data, sec=seconds, usec=microseconds, wirelen=wirelen)
         writer.close()
         Path(temp_path).replace(args.path)
@@ -520,7 +538,7 @@ def cmd_annotate(args) -> None:
 def cmd_ascii(args) -> None:
     """Render buffer hex as printable ASCII, aligned to the hex columns."""
     for data in parse_hex_lines(sys.stdin):
-        print("  ".join(chr(b) if 32 <= b < 127 else "." for b in data))
+        print(printable(data, "  "))
 
 
 def cmd_utf8(args) -> None:

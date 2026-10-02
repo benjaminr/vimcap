@@ -189,114 +189,145 @@ function! s:packet_info(index) abort
         \ 'summary': get(entry, 's', ''), 'bad_checksums': get(entry, 'bad', [])}
 endfunction
 
-function! s:run_tool(tool, args) abort
-  let linktype = vimcap#linktype(bufnr('%'))
+function! s:tool_overview(args) abort
+  let summaries = map(copy(vimcap#packet_summaries(bufnr('%'))[: 99]),
+        \ {index, summary -> (index + 1) . ': ' . summary})
+  return {'file': expand('%:p'), 'linktype': vimcap#linktype(bufnr('%')),
+        \ 'packet_count': line('$'), 'summaries': summaries}
+endfunction
 
-  if a:tool ==# 'overview'
-    let packets = get(get(b:, 'vimcap', {}), 'packets', [])
-    let summaries = map(packets[: 99],
-          \ {index, packet -> (index + 1) . ': ' . get(packet, 's', '')})
-    return {'file': expand('%:p'), 'linktype': linktype,
-          \ 'packet_count': line('$'), 'summaries': summaries}
+function! s:tool_packets(args) abort
+  let from = s:index(a:args, 'from', 1)
+  let to = s:index(a:args, 'to', from + 19)
+  return {'packets': map(range(from, to), {_, n -> s:packet_info(n)})}
+endfunction
 
-  elseif a:tool ==# 'packets'
-    let from = s:index(a:args, 'from', 1)
-    let to = s:index(a:args, 'to', from + 19)
-    return {'packets': map(range(from, to), {_, n -> s:packet_info(n)})}
+function! s:tool_detail(args) abort
+  let index = s:index(a:args, 'index', line('.'))
+  return {'detail': join(vimcap#detail_lines(bufnr('%'), index, ''), "\n")}
+endfunction
 
-  elseif a:tool ==# 'detail'
-    let index = s:index(a:args, 'index', line('.'))
-    return {'detail': join(vimcap#detail_lines(bufnr('%'), index, ''), "\n")}
+function! s:tool_goto(args) abort
+  let index = s:index(a:args, 'index', line('.'))
+  let byte = get(a:args, 'byte', 0)
+  call cursor(index, byte * 3 + 1)
+  normal! zv
+  call vimcap#track_cursor()
+  redraw
+  return {'position': 'packet ' . index . ' byte ' . byte,
+        \ 'field': vimcap#describe_byte(index, byte)}
+endfunction
 
-  elseif a:tool ==# 'goto'
-    let index = s:index(a:args, 'index', line('.'))
-    call cursor(index, get(a:args, 'byte', 0) * 3 + 1)
-    normal! zv
-    call vimcap#track_cursor()
-    redraw
-    return {'position': 'packet ' . index . ' byte ' . get(a:args, 'byte', 0),
-          \ 'field': vimcap#describe_byte(index, get(a:args, 'byte', 0))}
+function! s:tool_set_field(args) abort
+  let index = s:index(a:args, 'index', line('.'))
+  call cursor(index, 1)
+  call vimcap#set_field(get(a:args, 'spec', ''))
+  redraw
+  return s:packet_info(index)
+endfunction
 
-  elseif a:tool ==# 'set_field'
-    let index = s:index(a:args, 'index', line('.'))
-    call cursor(index, 1)
-    call vimcap#set_field(get(a:args, 'spec', ''))
-    redraw
-    return s:packet_info(index)
+function! s:tool_fix(args) abort
+  let from = s:index(a:args, 'from', 1)
+  let to = s:index(a:args, 'to', line('$'))
+  call vimcap#fix(from, to)
+  redraw
+  return {'packets': map(range(from, to), {_, n -> s:packet_info(n)})}
+endfunction
 
-  elseif a:tool ==# 'fix'
-    let from = s:index(a:args, 'from', 1)
-    let to = s:index(a:args, 'to', line('$'))
-    call vimcap#fix(from, to)
-    redraw
-    return {'packets': map(range(from, to), {_, n -> s:packet_info(n)})}
-
-  elseif a:tool ==# 'replace'
-    let index = s:index(a:args, 'index', 0)
-    let hex = get(a:args, 'hex', '')
-    if hex !~? '^\s*\%(\x\x\s*\)\+$'
-      return {'error': 'hex must be space-separated byte pairs'}
-    endif
-    call setline(index, substitute(tolower(hex), '\s\+', ' ', 'g'))
-    call vimcap#live#flush(bufnr('%'))
-    redraw
-    return s:packet_info(index)
-
-  elseif a:tool ==# 'insert'
-    let response = vimcap#api({'op': 'craft', 'expr': get(a:args, 'expr', '')})
-    if !has_key(response, 'hex')
-      return {'error': 'expression did not produce a packet'}
-    endif
-    let after = max([0, min([get(a:args, 'after', line('$')), line('$')])])
-    call append(after, response.hex)
-    call vimcap#live#flush(bufnr('%'))
-    redraw
-    return s:packet_info(after + 1)
-
-  elseif a:tool ==# 'delete'
-    let index = s:index(a:args, 'index', 0)
-    execute index . 'delete _'
-    call vimcap#live#flush(bufnr('%'))
-    redraw
-    return {'packet_count': line('$')}
-
-  elseif a:tool ==# 'filter'
-    call vimcap#filter(0, get(a:args, 'expr', ''))
-    redraw
-    return {'matching': sort(map(keys(get(b:, 'vimcap_filter_match', {})),
-          \ {_, k -> str2nr(k)}), 'n')}
-
-  elseif a:tool ==# 'clear_filter'
-    call vimcap#filter(1, '')
-    redraw
-    return {'ok': v:true}
-
-  elseif a:tool ==# 'follow'
-    call cursor(s:index(a:args, 'index', line('.')), 1)
-    call vimcap#follow()
-    redraw
-    let stream = bufnr('vimcap://stream')
-    return {'stream': stream > 0 ? join(getbufline(stream, 1, '$'), "\n") : ''}
-
-  elseif a:tool ==# 'grep'
-    let response = vimcap#api({'op': 'grep', 'pattern': get(a:args, 'pattern', ''),
-          \ 'packets': getline(1, '$')})
-    return {'matches': get(response, 'matches', [])}
-
-  elseif a:tool ==# 'stats'
-    let times = map(copy(get(get(b:, 'vimcap', {}), 'packets', [])),
-          \ {_, p -> get(p, 't', '0')})
-    let response = vimcap#api({'op': 'stats', 'linktype': linktype,
-          \ 'packets': getline(1, '$'), 'times': times})
-    return {'stats': join(get(response, 'lines', []), "\n")}
-
-  elseif a:tool ==# 'ex'
-    if !get(g:, 'vimcap_agent_raw', 0)
-      return {'error': 'raw ex commands are disabled; the user can enable '
-            \ . 'them with g:vimcap_agent_raw = 1'}
-    endif
-    return {'output': execute(get(a:args, 'command', ''))}
+function! s:tool_replace(args) abort
+  let index = s:index(a:args, 'index', 0)
+  let hex = get(a:args, 'hex', '')
+  if hex !~? '^\s*\%(\x\x\s*\)\+$'
+    return {'error': 'hex must be space-separated byte pairs'}
   endif
+  call setline(index, substitute(tolower(hex), '\s\+', ' ', 'g'))
+  call vimcap#live#flush(bufnr('%'))
+  redraw
+  return s:packet_info(index)
+endfunction
 
-  return {'error': 'unknown tool: ' . a:tool}
+function! s:tool_insert(args) abort
+  let response = vimcap#api({'op': 'craft', 'expr': get(a:args, 'expr', '')})
+  if !has_key(response, 'hex')
+    return {'error': 'expression did not produce a packet'}
+  endif
+  let after = max([0, min([get(a:args, 'after', line('$')), line('$')])])
+  call append(after, response.hex)
+  call vimcap#live#flush(bufnr('%'))
+  redraw
+  return s:packet_info(after + 1)
+endfunction
+
+function! s:tool_delete(args) abort
+  execute s:index(a:args, 'index', 0) . 'delete _'
+  call vimcap#live#flush(bufnr('%'))
+  redraw
+  return {'packet_count': line('$')}
+endfunction
+
+function! s:tool_filter(args) abort
+  call vimcap#filter(0, get(a:args, 'expr', ''))
+  redraw
+  return {'matching': sort(map(keys(get(b:, 'vimcap_filter_match', {})),
+        \ {_, k -> str2nr(k)}), 'n')}
+endfunction
+
+function! s:tool_clear_filter(args) abort
+  call vimcap#filter(1, '')
+  redraw
+  return {'ok': v:true}
+endfunction
+
+function! s:tool_follow(args) abort
+  call cursor(s:index(a:args, 'index', line('.')), 1)
+  call vimcap#follow()
+  redraw
+  let stream = bufnr('vimcap://stream')
+  return {'stream': stream > 0 ? join(getbufline(stream, 1, '$'), "\n") : ''}
+endfunction
+
+function! s:tool_grep(args) abort
+  let response = vimcap#api({'op': 'grep', 'pattern': get(a:args, 'pattern', ''),
+        \ 'packets': getline(1, '$')})
+  return {'matches': get(response, 'matches', [])}
+endfunction
+
+function! s:tool_stats(args) abort
+  let response = vimcap#api({'op': 'stats', 'linktype': vimcap#linktype(bufnr('%')),
+        \ 'packets': getline(1, '$'), 'times': vimcap#packet_times(bufnr('%'))})
+  return {'stats': join(get(response, 'lines', []), "\n")}
+endfunction
+
+function! s:tool_ex(args) abort
+  if !get(g:, 'vimcap_agent_raw', 0)
+    return {'error': 'raw ex commands are disabled; the user can enable '
+          \ . 'them with g:vimcap_agent_raw = 1'}
+  endif
+  return {'output': execute(get(a:args, 'command', ''))}
+endfunction
+
+" Tool name -> handler. Keep the keys in step with AGENT_TOOLS in vimcap.py,
+" which advertises the same catalogue to the agent.
+let s:tools = {
+      \ 'overview': function('s:tool_overview'),
+      \ 'packets': function('s:tool_packets'),
+      \ 'detail': function('s:tool_detail'),
+      \ 'goto': function('s:tool_goto'),
+      \ 'set_field': function('s:tool_set_field'),
+      \ 'fix': function('s:tool_fix'),
+      \ 'replace': function('s:tool_replace'),
+      \ 'insert': function('s:tool_insert'),
+      \ 'delete': function('s:tool_delete'),
+      \ 'filter': function('s:tool_filter'),
+      \ 'clear_filter': function('s:tool_clear_filter'),
+      \ 'follow': function('s:tool_follow'),
+      \ 'grep': function('s:tool_grep'),
+      \ 'stats': function('s:tool_stats'),
+      \ 'ex': function('s:tool_ex')}
+
+function! s:run_tool(tool, args) abort
+  if !has_key(s:tools, a:tool)
+    return {'error': 'unknown tool: ' . a:tool}
+  endif
+  return s:tools[a:tool](a:args)
 endfunction

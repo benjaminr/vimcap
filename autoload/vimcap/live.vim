@@ -148,14 +148,13 @@ endfunction
 " across by position (matching what saving does), and keep the sidecar in
 " sync so :w still writes the right timestamps.
 function! s:update_all_lines(bufnr, meta, current, linktype, limit) abort
-  let packets = get(a:meta, 'packets', [])
   let response = s:request({
         \ 'op': 'annotate',
         \ 'linktype': a:linktype,
         \ 'limit': a:limit,
         \ 'packets': a:current,
-        \ 'times': map(copy(packets), {_, p -> get(p, 't', '0')}),
-        \ 'wirelens': map(copy(packets), {_, p -> get(p, 'wl', 0)})})
+        \ 'times': vimcap#packet_times(a:bufnr),
+        \ 'wirelens': vimcap#packet_wirelens(a:bufnr)})
   if !has_key(response, 'packets')
     return 0
   endif

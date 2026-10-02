@@ -18,12 +18,33 @@ function! vimcap#linktype(bufnr) abort
         \ get(g:, 'vimcap_default_linktype', 1))
 endfunction
 
-function! s:annotate_limit() abort
-  return vimcap#annotate_limit()
-endfunction
-
 function! s:linktype() abort
   return vimcap#linktype(bufnr('%'))
+endfunction
+
+" The annotated packet list for a buffer (empty when none loaded).
+function! s:packets(bufnr) abort
+  return get(getbufvar(a:bufnr, 'vimcap', {}), 'packets', [])
+endfunction
+
+" Per-packet timestamps / wire lengths carried in the meta, for annotation
+" requests that must preserve them. Public so the agent bridge can reuse them.
+function! vimcap#packet_times(bufnr) abort
+  return map(copy(s:packets(a:bufnr)), {_, p -> get(p, 't', '0')})
+endfunction
+
+function! vimcap#packet_wirelens(bufnr) abort
+  return map(copy(s:packets(a:bufnr)), {_, p -> get(p, 'wl', 0)})
+endfunction
+
+function! vimcap#packet_summaries(bufnr) abort
+  return map(copy(s:packets(a:bufnr)), {_, p -> get(p, 's', '')})
+endfunction
+
+function! s:ensure_meta_file() abort
+  if !exists('b:vimcap_meta_file')
+    let b:vimcap_meta_file = tempname() . '.json'
+  endif
 endfunction
 
 " Run the helper script. Returns stdout lines; throws 'vimcap: ...' on error.
@@ -60,15 +81,13 @@ endfunction
 " ---------------------------------------------------------------------------
 
 function! vimcap#load(path) abort
-  if !exists('b:vimcap_meta_file')
-    let b:vimcap_meta_file = tempname() . '.json'
-  endif
+  call s:ensure_meta_file()
   let lines = []
   if filereadable(a:path)
     try
       let lines = s:run('load ' . shellescape(a:path)
             \ . ' --meta ' . shellescape(b:vimcap_meta_file)
-            \ . ' --limit ' . s:annotate_limit(), v:null)
+            \ . ' --limit ' . vimcap#annotate_limit(), v:null)
     catch /^vimcap:/
       call s:error(v:exception)
       return
@@ -112,7 +131,7 @@ function! vimcap#write(path) abort
   try
     let out = s:run('save ' . shellescape(a:path) . meta_arg
           \ . ' --linktype ' . s:linktype()
-          \ . ' --limit ' . s:annotate_limit(), getline(1, '$'))
+          \ . ' --limit ' . vimcap#annotate_limit(), getline(1, '$'))
   catch /^vimcap:/
     call s:error(v:exception)
     return
@@ -128,13 +147,11 @@ function! vimcap#write(path) abort
 endfunction
 
 function! vimcap#refresh() abort
-  if !exists('b:vimcap_meta_file')
-    let b:vimcap_meta_file = tempname() . '.json'
-  endif
+  call s:ensure_meta_file()
   try
     call s:run('annotate --meta ' . shellescape(b:vimcap_meta_file)
           \ . ' --linktype ' . s:linktype()
-          \ . ' --limit ' . s:annotate_limit(), getline(1, '$'))
+          \ . ' --limit ' . vimcap#annotate_limit(), getline(1, '$'))
   catch /^vimcap:/
     call s:error(v:exception)
     return
@@ -293,7 +310,7 @@ function! vimcap#apply_highlights(bufnr) abort
     call prop_clear(1, max([last, 1]), {'bufnr': a:bufnr})
   endif
   let lnum = 0
-  for packet in get(getbufvar(a:bufnr, 'vimcap', {}), 'packets', [])
+  for packet in s:packets(a:bufnr)
     let lnum += 1
     if lnum > last
       break
@@ -306,7 +323,7 @@ function! vimcap#highlight_line(bufnr, lnum) abort
   if !get(g:, 'vimcap_highlight', 1)
     return
   endif
-  let packets = get(getbufvar(a:bufnr, 'vimcap', {}), 'packets', [])
+  let packets = s:packets(a:bufnr)
   if a:lnum > len(packets)
     return
   endif
@@ -331,16 +348,15 @@ function! s:cursor_byte() abort
 endfunction
 
 function! s:packet_meta(lnum) abort
-  let packets = get(get(b:, 'vimcap', {}), 'packets', [])
+  let packets = s:packets(bufnr('%'))
   return a:lnum <= len(packets) ? packets[a:lnum - 1] : {}
 endfunction
 
-" Human description of the byte at (lnum, byte): deepest matching field,
+" Description of a byte within a packet's meta: deepest matching field,
 " falling back to the owning layer.
-function! s:describe_byte(lnum, byte) abort
-  let packet = s:packet_meta(a:lnum)
+function! s:describe_in(packet, byte) abort
   let found = ''
-  for [start, end, layer, name, value] in get(packet, 'fields', [])
+  for [start, end, layer, name, value] in get(a:packet, 'fields', [])
     if a:byte >= start && a:byte < end
       let found = printf('%s.%s = %s', layer, name, value)
     endif
@@ -348,12 +364,16 @@ function! s:describe_byte(lnum, byte) abort
   if !empty(found)
     return found
   endif
-  for [start, end, name] in get(packet, 'layers', [])
+  for [start, end, name] in get(a:packet, 'layers', [])
     if a:byte >= start && a:byte < end
       let found = name
     endif
   endfor
   return found
+endfunction
+
+function! s:describe_byte(lnum, byte) abort
+  return s:describe_in(s:packet_meta(a:lnum), a:byte)
 endfunction
 
 " Public wrappers used by the agent bridge.
@@ -367,8 +387,9 @@ endfunction
 
 function! vimcap#statusline() abort
   let byte = s:cursor_byte()
-  let info = s:describe_byte(line('.'), byte)
-  let bad = get(s:packet_meta(line('.')), 'bad', [])
+  let packet = s:packet_meta(line('.'))
+  let info = s:describe_in(packet, byte)
+  let bad = get(packet, 'bad', [])
   let stale = get(b:, 'vimcap_stale', 0) ? '  [edited - :VimcapRefresh]' : ''
   return ' %f %m pkt %l/%L  byte ' . printf('0x%02X', byte)
         \ . (empty(info) ? '' : '  ' . substitute(info, '%', '%%', 'g'))
@@ -475,7 +496,7 @@ function! vimcap#api(payload) abort
 endfunction
 
 function! s:base_payload() abort
-  return {'linktype': s:linktype(), 'limit': s:annotate_limit()}
+  return {'linktype': s:linktype(), 'limit': vimcap#annotate_limit()}
 endfunction
 
 " Recompute checksums and length fields for the given packet lines.
@@ -616,10 +637,9 @@ function! vimcap#grep(pattern) abort
 endfunction
 
 function! vimcap#stats() abort
-  let times = map(copy(get(get(b:, 'vimcap', {}), 'packets', [])),
-        \ {_, p -> get(p, 't', '0')})
   let response = vimcap#api(extend(s:base_payload(),
-        \ {'op': 'stats', 'packets': getline(1, '$'), 'times': times}))
+        \ {'op': 'stats', 'packets': getline(1, '$'),
+        \  'times': vimcap#packet_times(bufnr('%'))}))
   if has_key(response, 'lines')
     call s:pane('vimcap://stats', response.lines, '')
   endif
@@ -735,20 +755,15 @@ function! vimcap#auto_panes() abort
         \ get(g:, 'vimcap_auto_panes', ['detail', 'ascii', 'bits']))
 endfunction
 
-" Open a pane by its short name.
+" Builder for each pane by short name (all callable with no arguments).
+let s:pane_builders = {
+      \ 'detail': 'vimcap#detail', 'ascii': 'vimcap#ascii_pane',
+      \ 'bits': 'vimcap#bits_pane', 'utf8': 'vimcap#utf8_pane',
+      \ 'summary': 'vimcap#summary_pane', 'stats': 'vimcap#stats'}
+
 function! s:open_named_pane(pane) abort
-  if a:pane ==# 'detail'
-    call vimcap#detail()
-  elseif a:pane ==# 'ascii'
-    call vimcap#ascii_pane()
-  elseif a:pane ==# 'bits'
-    call vimcap#bits_pane()
-  elseif a:pane ==# 'utf8'
-    call vimcap#utf8_pane()
-  elseif a:pane ==# 'summary'
-    call vimcap#summary_pane('')
-  elseif a:pane ==# 'stats'
-    call vimcap#stats()
+  if has_key(s:pane_builders, a:pane)
+    call call(s:pane_builders[a:pane], [])
   endif
 endfunction
 
@@ -774,11 +789,9 @@ endfunction
 
 " An open pane window in the same region, to stack the new pane beneath.
 function! s:region_window(region) abort
-  for buffer in keys(s:default_region)
-        \ + keys(get(g:, 'vimcap_pane_region', {}))
-        \ + ['stream', 'stats']
-    let winid = bufwinid(bufnr('vimcap://' . s:pane_name(buffer)))
-    if winid > 0 && s:pane_region('vimcap://' . s:pane_name(buffer)) ==# a:region
+  for name in keys(s:default_region) + keys(get(g:, 'vimcap_pane_region', {}))
+    let winid = bufwinid(bufnr('vimcap://' . name))
+    if winid > 0 && s:pane_region('vimcap://' . name) ==# a:region
       return winid
     endif
   endfor
@@ -882,10 +895,6 @@ function! s:ascii_line(hexline) abort
   return join(chars, '  ')
 endfunction
 
-function! s:ascii_lines(bufnr) abort
-  return map(getbufline(a:bufnr, 1, '$'), {_, line -> s:ascii_line(line)})
-endfunction
-
 " One byte becomes eight block glyphs, most significant bit first.
 let s:bit_weights = [128, 64, 32, 16, 8, 4, 2, 1]
 
@@ -902,18 +911,27 @@ function! s:bits_line(hexline) abort
   return join(groups, ' ')
 endfunction
 
-function! s:bits_lines(bufnr) abort
-  return map(getbufline(a:bufnr, 1, '$'), {_, line -> s:bits_line(line)})
+" Byte-aligned panes rendered from the hex bytes. Each knows its per-line
+" formatter, its screen columns per byte, and how many glyphs to highlight
+" when tracking the cursor. This table drives building and cursor-tracking
+" so the two never drift.
+let s:byte_panes = {
+      \ 'ascii': {'line': function('s:ascii_line'), 'cols': 3, 'matchlen': 1},
+      \ 'bits':  {'line': function('s:bits_line'),  'cols': 9, 'matchlen': 8}}
+
+function! s:byte_pane_lines(bufnr, Formatter) abort
+  return map(getbufline(a:bufnr, 1, '$'), {_, line -> a:Formatter(line)})
 endfunction
 
 function! s:summary_lines(bufnr) abort
-  let packets = get(getbufvar(a:bufnr, 'vimcap', {}), 'packets', [])
+  let packets = s:packets(a:bufnr)
   return map(copy(packets),
         \ {index, packet -> printf('%4d  %s', index + 1, get(packet, 's', ''))})
 endfunction
 
 function! vimcap#ascii_pane() abort
-  call s:pane('vimcap://ascii', s:ascii_lines(bufnr('%')), 'scroll')
+  call s:pane('vimcap://ascii',
+        \ s:byte_pane_lines(bufnr('%'), s:byte_panes.ascii.line), 'scroll')
 endfunction
 
 function! vimcap#utf8_pane() abort
@@ -921,7 +939,8 @@ function! vimcap#utf8_pane() abort
 endfunction
 
 function! vimcap#bits_pane() abort
-  call s:pane('vimcap://bits', s:bits_lines(bufnr('%')), 'scroll')
+  call s:pane('vimcap://bits',
+        \ s:byte_pane_lines(bufnr('%'), s:byte_panes.bits.line), 'scroll')
   let winid = bufwinid(bufnr('vimcap://bits'))
   if winid > 0
     call win_execute(winid, 'if !get(b:, "vimcap_bits_syntax", 0)'
@@ -932,11 +951,18 @@ function! vimcap#bits_pane() abort
 endfunction
 
 " Bring every open pane in line with the buffer's current bytes and
-" annotations. Called after live updates and :VimcapRefresh.
+" annotations. Called after live updates and :VimcapRefresh. Lines are only
+" built for panes that are actually open, so closed panes cost nothing.
 function! vimcap#update_panes(bufnr) abort
-  call s:sync_pane('vimcap://ascii', s:ascii_lines(a:bufnr))
-  call s:sync_pane('vimcap://bits', s:bits_lines(a:bufnr))
-  call s:sync_pane('vimcap://summary', s:summary_lines(a:bufnr))
+  for [name, spec] in items(s:byte_panes)
+    if bufwinid(bufnr('vimcap://' . name)) >= 0
+      call s:sync_pane('vimcap://' . name,
+            \ s:byte_pane_lines(a:bufnr, spec.line))
+    endif
+  endfor
+  if bufwinid(bufnr('vimcap://summary')) >= 0
+    call s:sync_pane('vimcap://summary', s:summary_lines(a:bufnr))
+  endif
   let hexwin = bufwinid(a:bufnr)
   if hexwin > 0 && bufwinid(bufnr('vimcap://detail')) > 0
     call s:sync_pane('vimcap://detail', s:detail_lines(a:bufnr,
@@ -946,7 +972,7 @@ endfunction
 
 function! vimcap#summary_pane(...) abort
   let proto = a:0 && !empty(a:1) ? a:1 : ''
-  let packets = get(get(b:, 'vimcap', {}), 'packets', [])
+  let packets = s:packets(bufnr('%'))
   if empty(proto) && !empty(packets) && !get(b:, 'vimcap_stale', 0)
         \ && len(packets) >= line('$') && has_key(packets[-1], 's')
     " Everything is annotated: build the pane from meta without a subprocess.
@@ -995,14 +1021,15 @@ function! vimcap#detail_toggle() abort
   endif
 endfunction
 
-" Keep every open view pointed at the byte under the cursor: the ascii pane
-" at three screen columns per byte, the bits pane at nine, while the summary
+" Keep every open view pointed at the byte under the cursor: byte-aligned
+" panes at their own columns-per-byte from s:byte_panes, while the summary
 " and UTF-8 panes follow the packet line.
 function! vimcap#track_cursor() abort
   let lnum = line('.')
   let byte = s:cursor_byte()
-  call s:track_pane('vimcap://ascii', lnum, byte * 3, 1)
-  call s:track_pane('vimcap://bits', lnum, byte * 9, 8)
+  for [name, spec] in items(s:byte_panes)
+    call s:track_pane('vimcap://' . name, lnum, byte * spec.cols, spec.matchlen)
+  endfor
   call s:track_pane('vimcap://summary', lnum, -1, 0)
   call s:track_pane('vimcap://utf8', lnum, -1, 0)
   call vimcap#detail_follow()
