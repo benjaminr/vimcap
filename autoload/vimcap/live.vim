@@ -104,6 +104,15 @@ function! vimcap#live#show(linktype, hex, proto) abort
   return get(response, 'lines', [])
 endfunction
 
+" Send an arbitrary request through the daemon; {} when it is unavailable,
+" so callers can fall back to a one-shot subprocess.
+function! vimcap#live#request(payload) abort
+  if !vimcap#live#available()
+    return {}
+  endif
+  return s:request(a:payload)
+endfunction
+
 function! s:mark_fresh(bufnr, lines) abort
   call setbufvar(a:bufnr, 'vimcap_lines', a:lines)
   call setbufvar(a:bufnr, 'vimcap_stale', 0)

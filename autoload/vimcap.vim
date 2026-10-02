@@ -90,26 +90,20 @@ function! vimcap#load(path) abort
   call vimcap#init()
   call vimcap#apply_highlights(bufnr('%'))
 
-  " Panes that open along with the capture; K puts the dissection away.
+  " Panes that open along with the capture, in the configured order; K puts
+  " the dissection away.
   if line('$') > 0 && !empty(getline(1))
-    for pane in get(g:, 'vimcap_auto_panes', ['detail', 'ascii', 'bits'])
-      if bufwinid(bufnr('vimcap://' . pane)) > 0
-        continue
-      endif
-      if pane ==# 'detail'
-        call vimcap#detail()
-      elseif pane ==# 'ascii'
-        call vimcap#ascii_pane()
-      elseif pane ==# 'bits'
-        call vimcap#bits_pane()
-      elseif pane ==# 'summary'
-        call vimcap#summary_pane('')
-      elseif pane ==# 'utf8'
-        call vimcap#utf8_pane()
+    for pane in vimcap#auto_panes()
+      if bufwinid(bufnr('vimcap://' . pane)) <= 0
+        call s:open_named_pane(pane)
       endif
     endfor
   endif
   call vimcap#update_panes(bufnr('%'))
+
+  if get(g:, 'vimcap_auto_agent', 1) && line('$') > 0 && !empty(getline(1))
+    call vimcap#agent#auto()
+  endif
 endfunction
 
 function! vimcap#write(path) abort
@@ -192,12 +186,26 @@ function! vimcap#init() abort
   command! -buffer                VimcapRefresh  call vimcap#refresh()
   command! -buffer -nargs=1       VimcapGoto     call vimcap#goto_offset(<q-args>)
   command! -buffer -range         VimcapValue    call vimcap#value()
+  command! -buffer -range=%       VimcapFix      call vimcap#fix(<line1>, <line2>)
+  command! -buffer -nargs=1       VimcapSet      call vimcap#set_field(<q-args>)
+  command! -buffer -nargs=1       VimcapNew      call vimcap#craft(<q-args>)
+  command! -buffer                VimcapCommand  call vimcap#command_string()
+  command! -buffer -bang -nargs=? VimcapFilter   call vimcap#filter(<bang>0, <q-args>)
+  command! -buffer                VimcapFollow   call vimcap#follow()
+  command! -buffer -nargs=1       VimcapGrep     call vimcap#grep(<q-args>)
+  command! -buffer                VimcapStats    call vimcap#stats()
+  command! -buffer                VimcapAnon     call vimcap#anonymise()
+  command! -buffer -nargs=+       VimcapSniff    call vimcap#sniff(<q-args>)
+  command! -buffer -range=% -nargs=? VimcapSend  call vimcap#send(<line1>, <line2>, <q-args>)
+  command! -buffer -nargs=1 -complete=file VimcapDiff call vimcap#diff(<q-args>)
+  command! -buffer -bang -nargs=? VimcapAgent call vimcap#agent#start(<bang>0, <q-args>)
 
   nnoremap <buffer> <silent> K  :call vimcap#detail_toggle()<CR>
   nnoremap <buffer> <silent> >a :VimcapAscii<CR>
   nnoremap <buffer> <silent> >b :VimcapBits<CR>
   nnoremap <buffer> <silent> >u :VimcapUtf8<CR>
   nnoremap <buffer> <silent> >s :VimcapSummary<CR>
+  nnoremap <buffer> <silent> >f :call vimcap#set_prompt()<CR>
   xnoremap <buffer> <silent> K :VimcapValue<CR>
 
   if get(g:, 'vimcap_byte_motions', 1)
@@ -348,12 +356,23 @@ function! s:describe_byte(lnum, byte) abort
   return found
 endfunction
 
+" Public wrappers used by the agent bridge.
+function! vimcap#describe_byte(lnum, byte) abort
+  return s:describe_byte(a:lnum, a:byte)
+endfunction
+
+function! vimcap#detail_lines(bufnr, lnum, proto) abort
+  return s:detail_lines(a:bufnr, a:lnum, a:proto)
+endfunction
+
 function! vimcap#statusline() abort
   let byte = s:cursor_byte()
   let info = s:describe_byte(line('.'), byte)
+  let bad = get(s:packet_meta(line('.')), 'bad', [])
   let stale = get(b:, 'vimcap_stale', 0) ? '  [edited - :VimcapRefresh]' : ''
   return ' %f %m pkt %l/%L  byte ' . printf('0x%02X', byte)
         \ . (empty(info) ? '' : '  ' . substitute(info, '%', '%%', 'g'))
+        \ . (empty(bad) ? '' : '  ✗' . join(bad, ' ✗') . ' (:VimcapFix)')
         \ . stale . '%= linktype ' . s:linktype() . ' '
 endfunction
 
@@ -431,54 +450,368 @@ function! vimcap#value() abort
 endfunction
 
 " ---------------------------------------------------------------------------
+" Scapy-powered operations
+" ---------------------------------------------------------------------------
+
+" Send a request through the live daemon, or a one-shot 'rpc' subprocess
+" when the daemon is unavailable (Neovim, or after a daemon failure).
+" Reports errors itself and returns {} so callers can simply bail out.
+function! vimcap#api(payload) abort
+  let response = vimcap#live#request(a:payload)
+  if empty(response)
+    try
+      let out = s:run('rpc', [json_encode(a:payload)])
+      let response = empty(out) ? {} : json_decode(out[0])
+    catch /^vimcap:/
+      call s:error(v:exception)
+      return {}
+    endtry
+  endif
+  if has_key(response, 'error')
+    call s:error('vimcap: ' . response.error)
+    return {}
+  endif
+  return response
+endfunction
+
+function! s:base_payload() abort
+  return {'linktype': s:linktype(), 'limit': s:annotate_limit()}
+endfunction
+
+" Recompute checksums and length fields for the given packet lines.
+function! vimcap#fix(line1, line2) abort
+  let response = vimcap#api(extend(s:base_payload(),
+        \ {'op': 'fix', 'packets': getline(a:line1, a:line2)}))
+  if !has_key(response, 'packets')
+    return
+  endif
+  let changed = 0
+  for index in range(len(response.packets))
+    if getline(a:line1 + index) !=# response.packets[index]
+      call setline(a:line1 + index, response.packets[index])
+      let changed += 1
+    endif
+  endfor
+  call vimcap#live#flush(bufnr('%'))
+  echo changed . ' packet' . (changed == 1 ? '' : 's') . ' fixed'
+endfunction
+
+" Set a protocol field by name on the current packet, e.g. 'IP.ttl=12'.
+" Checksums and lengths are recomputed around the change.
+function! vimcap#set_field(spec) abort
+  let response = vimcap#api(extend(s:base_payload(),
+        \ {'op': 'setfield', 'hex': getline('.'), 'spec': a:spec}))
+  if has_key(response, 'hex')
+    call setline('.', response.hex)
+    call vimcap#live#flush(bufnr('%'))
+  endif
+endfunction
+
+" Interactive field edit, prefilled with the field under the cursor.
+function! vimcap#set_prompt() abort
+  let field = matchstr(s:describe_byte(line('.'), s:cursor_byte()), '^[^ =]\+')
+  let spec = input('set field: ', empty(field) ? '' : field . '=')
+  redraw
+  if !empty(spec)
+    call vimcap#set_field(spec)
+  endif
+endfunction
+
+" Append a packet built from a scapy expression below the cursor.
+function! vimcap#craft(expr) abort
+  let response = vimcap#api({'op': 'craft', 'expr': a:expr})
+  if has_key(response, 'hex')
+    call append(line('.'), response.hex)
+    call vimcap#live#flush(bufnr('%'))
+  endif
+endfunction
+
+" Yank the scapy expression that rebuilds the current packet.
+function! vimcap#command_string() abort
+  let response = vimcap#api(extend(s:base_payload(),
+        \ {'op': 'command', 'hex': getline('.')}))
+  if has_key(response, 'command')
+    let @" = response.command
+    silent! let @+ = response.command
+    echo response.command
+  endif
+endfunction
+
+" ---------------------------------------------------------------------------
+" Filtering, streams, search, statistics
+" ---------------------------------------------------------------------------
+
+function! vimcap#foldexpr(lnum) abort
+  return get(get(b:, 'vimcap_filter_match', {}), a:lnum, 0) ? 0 : 1
+endfunction
+
+function! vimcap#foldtext() abort
+  return '  ' . (v:foldend - v:foldstart + 1) . ' packets filtered '
+endfunction
+
+function! s:apply_filter_folds(indices) abort
+  let b:vimcap_filter_match = {}
+  for index in a:indices
+    let b:vimcap_filter_match[index] = 1
+  endfor
+  setlocal foldmethod=expr foldexpr=vimcap#foldexpr(v:lnum)
+  setlocal foldtext=vimcap#foldtext() foldlevel=0 foldenable
+endfunction
+
+function! s:clear_filter() abort
+  if exists('b:vimcap_filter_match')
+    unlet b:vimcap_filter_match
+  endif
+  setlocal foldmethod=manual foldtext&
+  normal! zE
+endfunction
+
+" Fold away packets not matching a layer name ('DNS') or Python expression
+" ('p[TCP].dport == 80'). Bang or no argument clears the filter.
+function! vimcap#filter(bang, expr) abort
+  if a:bang || empty(a:expr)
+    call s:clear_filter()
+    echo 'filter cleared'
+    return
+  endif
+  let response = vimcap#api(extend(s:base_payload(),
+        \ {'op': 'filter', 'expr': a:expr, 'packets': getline(1, '$')}))
+  if !has_key(response, 'indices')
+    return
+  endif
+  call s:apply_filter_folds(response.indices)
+  echo len(response.indices) . '/' . line('$')
+        \ . ' packets match (:VimcapFilter! clears)'
+endfunction
+
+" Fold to the current packet's TCP/UDP conversation and show its payloads.
+function! vimcap#follow() abort
+  let response = vimcap#api(extend(s:base_payload(),
+        \ {'op': 'follow', 'packets': getline(1, '$'), 'index': line('.')}))
+  if !has_key(response, 'indices')
+    return
+  endif
+  call s:apply_filter_folds(response.indices)
+  call s:pane('vimcap://stream', response.lines, '')
+  echo len(response.indices) . ' packets in conversation (:VimcapFilter! clears)'
+endfunction
+
+" Regex-search decoded payloads and load matches into the quickfix list.
+function! vimcap#grep(pattern) abort
+  let response = vimcap#api({'op': 'grep', 'pattern': a:pattern,
+        \ 'packets': getline(1, '$')})
+  if !has_key(response, 'matches')
+    return
+  endif
+  let entries = map(copy(response.matches), {_, m -> {
+        \ 'bufnr': bufnr('%'), 'lnum': m[0], 'col': m[1] * 3 + 1,
+        \ 'text': printf('byte 0x%02X  %s', m[1], m[2])}})
+  call setqflist(entries, 'r')
+  if empty(entries)
+    echo 'no matches'
+  else
+    copen
+    wincmd p
+  endif
+endfunction
+
+function! vimcap#stats() abort
+  let times = map(copy(get(get(b:, 'vimcap', {}), 'packets', [])),
+        \ {_, p -> get(p, 't', '0')})
+  let response = vimcap#api(extend(s:base_payload(),
+        \ {'op': 'stats', 'packets': getline(1, '$'), 'times': times}))
+  if has_key(response, 'lines')
+    call s:pane('vimcap://stats', response.lines, '')
+  endif
+endfunction
+
+" ---------------------------------------------------------------------------
+" Anonymise, sniff, send, diff
+" ---------------------------------------------------------------------------
+
+" Consistently rewrite MAC and IP addresses (payload contents untouched).
+function! vimcap#anonymise() abort
+  let response = vimcap#api(extend(s:base_payload(),
+        \ {'op': 'anon', 'packets': getline(1, '$')}))
+  if has_key(response, 'packets')
+    call setline(1, response.packets)
+    call vimcap#live#flush(bufnr('%'))
+    echo 'addresses anonymised (u undoes it)'
+  endif
+endfunction
+
+" Capture packets from an interface and append them to the buffer.
+" Needs capture privileges; the helper's error explains if they are missing.
+function! vimcap#sniff(argstring) abort
+  let parts = split(a:argstring)
+  let iface = get(parts, 0, '')
+  let packet_count = get(parts, 1, '10')
+  if packet_count !~# '^\d\+$'
+    call s:error('vimcap: usage :VimcapSniff {iface} [count]')
+    return
+  endif
+  echo 'sniffing ' . iface . '...'
+  try
+    let out = s:run('sniff --iface ' . shellescape(iface)
+          \ . ' --count ' . packet_count
+          \ . ' --timeout ' . get(g:, 'vimcap_sniff_timeout', 15), v:null)
+  catch /^vimcap:/
+    call s:error(v:exception)
+    return
+  endtry
+  if empty(out)
+    echo 'no packets captured'
+    return
+  endif
+  call append(line('$'), out)
+  call vimcap#live#flush(bufnr('%'))
+  echo len(out) . ' packets captured'
+endfunction
+
+" Transmit the given packets. Off by default: it puts traffic on the wire,
+" so it must be enabled explicitly with g:vimcap_allow_send = 1.
+function! vimcap#send(line1, line2, iface) abort
+  if !get(g:, 'vimcap_allow_send', 0)
+    call s:error('vimcap: transmitting is disabled; '
+          \ . 'set g:vimcap_allow_send = 1 to enable :VimcapSend')
+    return
+  endif
+  try
+    let out = s:run('send --linktype ' . s:linktype()
+          \ . (empty(a:iface) ? '' : ' --iface ' . shellescape(a:iface)),
+          \ getline(a:line1, a:line2))
+  catch /^vimcap:/
+    call s:error(v:exception)
+    return
+  endtry
+  echo get(out, 0, 'sent')
+endfunction
+
+" Compare this capture with another, vimdiff-style over the hex lines.
+function! vimcap#diff(path) abort
+  let saved = [get(g:, 'vimcap_panes', v:null), get(g:, 'vimcap_auto_panes', v:null)]
+  let g:vimcap_panes = []
+  let g:vimcap_auto_panes = []
+  try
+    diffthis
+    execute 'vertical split ' . fnameescape(a:path)
+    diffthis
+    wincmd p
+  finally
+    if saved[0] is v:null | unlet g:vimcap_panes | else | let g:vimcap_panes = saved[0] | endif
+    if saved[1] is v:null | unlet g:vimcap_auto_panes | else | let g:vimcap_auto_panes = saved[1] | endif
+  endtry
+endfunction
+
+" ---------------------------------------------------------------------------
 " Panes: ascii / utf8 / summary / detail
 " ---------------------------------------------------------------------------
 
-" Byte-aligned views sit under the hex window; dissection views live in a
-" shared right-hand column.
-let s:column_panes = ['vimcap://detail', 'vimcap://summary']
+" Panes are grouped into regions and sized from configuration:
+"
+"   g:vimcap_panes     ordered list of the panes to open on load, e.g.
+"                      ['detail', 'ascii', 'bits']. (g:vimcap_auto_panes is
+"                      still honoured as the older name.)
+"   g:vimcap_pane_region  {pane: 'right' | 'bottom'} overrides placement.
+"                      'right' panes stack in a full-height column beside the
+"                      hex; 'bottom' panes stack under it, column-aligned.
+"   g:vimcap_pane_width   width (columns) of the right-hand column.
+"   g:vimcap_pane_height  height (lines) of a bottom pane.
+"   g:vimcap_pane_size    {pane: N} overrides one pane's cross-size (the
+"                      height of a bottom or stacked-right pane).
+"
+" All names here are the short pane name ('detail'), not the buffer name
+" ('vimcap://detail').
 
-" The window of any open column pane, so a new one stacks beneath it.
-function! s:column_window() abort
-  for name in s:column_panes
-    let winid = bufwinid(bufnr(name))
-    if winid > 0
+let s:default_region = {
+      \ 'detail': 'right', 'summary': 'right',
+      \ 'stream': 'right', 'stats': 'right',
+      \ 'ascii': 'bottom', 'bits': 'bottom', 'utf8': 'bottom'}
+
+" Panes to open automatically on load, in order. g:vimcap_panes is the
+" current name; g:vimcap_auto_panes is kept as an alias.
+function! vimcap#auto_panes() abort
+  return get(g:, 'vimcap_panes',
+        \ get(g:, 'vimcap_auto_panes', ['detail', 'ascii', 'bits']))
+endfunction
+
+" Open a pane by its short name.
+function! s:open_named_pane(pane) abort
+  if a:pane ==# 'detail'
+    call vimcap#detail()
+  elseif a:pane ==# 'ascii'
+    call vimcap#ascii_pane()
+  elseif a:pane ==# 'bits'
+    call vimcap#bits_pane()
+  elseif a:pane ==# 'utf8'
+    call vimcap#utf8_pane()
+  elseif a:pane ==# 'summary'
+    call vimcap#summary_pane('')
+  elseif a:pane ==# 'stats'
+    call vimcap#stats()
+  endif
+endfunction
+
+function! s:pane_name(buffer) abort
+  return substitute(a:buffer, '^vimcap://', '', '')
+endfunction
+
+function! s:pane_region(buffer) abort
+  let name = s:pane_name(a:buffer)
+  return get(get(g:, 'vimcap_pane_region', {}), name,
+        \ get(s:default_region, name, 'bottom'))
+endfunction
+
+function! s:pane_cross_size(buffer, region) abort
+  let override = get(get(g:, 'vimcap_pane_size', {}), s:pane_name(a:buffer), 0)
+  if override > 0
+    return override
+  endif
+  return a:region ==# 'right'
+        \ ? min([get(g:, 'vimcap_pane_width', 64), &columns / 2])
+        \ : min([get(g:, 'vimcap_pane_height', 10), &lines / 2])
+endfunction
+
+" An open pane window in the same region, to stack the new pane beneath.
+function! s:region_window(region) abort
+  for buffer in keys(s:default_region)
+        \ + keys(get(g:, 'vimcap_pane_region', {}))
+        \ + ['stream', 'stats']
+    let winid = bufwinid(bufnr('vimcap://' . s:pane_name(buffer)))
+    if winid > 0 && s:pane_region('vimcap://' . s:pane_name(buffer)) ==# a:region
       return winid
     endif
   endfor
   return -1
 endfunction
 
-function! s:open_pane_window(name, existing) abort
-  if index(s:column_panes, a:name) < 0
-    " Bottom pane, column-aligned with the hex window.
-    let height = min([10, max([3, &lines / 3])])
-    if a:existing > 0
-      execute 'botright ' . height . 'sbuffer' a:existing
-    else
-      execute 'botright ' . height . 'new'
-    endif
-    setlocal winfixheight
-  else
-    let column = s:column_window()
-    if column > 0
-      call win_gotoid(column)
-      if a:existing > 0
-        execute 'belowright sbuffer' a:existing
-      else
-        belowright new
-      endif
-    else
-      let width = min([get(g:, 'vimcap_pane_width', 64), &columns / 2])
-      if a:existing > 0
-        execute 'botright vertical sbuffer' a:existing
-      else
-        botright vnew
-      endif
-      execute 'vertical resize' width
-    endif
+" Open a window for a pane in its configured region, sized from config.
+" hex_win anchors 'bottom' panes so they stay under the hex, not full width.
+function! s:open_pane_window(name, existing, hex_win) abort
+  let region = s:pane_region(a:name)
+  let size = s:pane_cross_size(a:name, region)
+  let neighbour = s:region_window(region)
+  let open = a:existing > 0 ? ('sbuffer ' . a:existing) : 'new'
+
+  if neighbour > 0
+    " Stack beneath the region's existing pane.
+    call win_gotoid(neighbour)
+    execute 'belowright ' . open
+    execute 'resize' size
+  elseif region ==# 'right'
+    execute 'botright vertical ' . open
+    execute 'vertical resize' size
     setlocal winfixwidth
+  else
+    " First bottom pane: split the hex window so it sits under it.
+    if a:hex_win > 0
+      call win_gotoid(a:hex_win)
+    endif
+    execute 'belowright ' . open
+    execute 'resize' size
+    setlocal winfixheight
   endif
+
   if a:existing < 0
     setlocal buftype=nofile bufhidden=wipe noswapfile
     silent! execute 'file ' . fnameescape(a:name)
@@ -495,7 +828,7 @@ function! s:pane(name, lines, bind) abort
   if winid > 0
     call win_gotoid(winid)
   else
-    call s:open_pane_window(a:name, existing)
+    call s:open_pane_window(a:name, existing, source_win)
   endif
   setlocal modifiable
   silent keepjumps %delete _
