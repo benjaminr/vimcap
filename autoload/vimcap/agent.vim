@@ -7,7 +7,11 @@
 "
 " Trust model: the bridge listens on 127.0.0.1 with a per-session token, and
 " the agent only reaches the operations dispatch() implements. Raw ex
-" commands stay off unless g:vimcap_agent_raw is set.
+" commands stay off unless g:vimcap_agent_raw is set. Note that the 'insert'
+" and 'filter' tools evaluate scapy/Python expressions (with builtins
+" stripped, see scapy_namespace in vimcap.py) — that blocks the obvious
+" escapes but is a restriction, not a hardened sandbox, so run agents you
+" trust with the session.
 
 let s:bufnr = -1
 let s:channel = v:null
@@ -266,10 +270,12 @@ function! s:tool_delete(args) abort
 endfunction
 
 function! s:tool_filter(args) abort
-  call vimcap#filter(0, get(a:args, 'expr', ''))
+  let indices = vimcap#filter(0, get(a:args, 'expr', ''))
   redraw
-  return {'matching': sort(map(keys(get(b:, 'vimcap_filter_match', {})),
-        \ {_, k -> str2nr(k)}), 'n')}
+  if indices is v:null
+    return {'error': 'filter expression failed'}
+  endif
+  return {'matching': indices}
 endfunction
 
 function! s:tool_clear_filter(args) abort

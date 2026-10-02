@@ -221,12 +221,18 @@ def mac_vendor(mac: str):
 def scapy_namespace() -> dict:
     """The namespace scapy expressions evaluate in.
 
-    Expressions come from the user's own Vim commands, so this carries the
-    same trust as :python3 — it is a convenience, not a security boundary.
+    `__builtins__` is emptied so expressions reach scapy's names but not
+    `__import__`, `open`, `eval` and friends. This blocks the obvious escapes
+    (the agent is deliberately scoped to the vimcap tools) but is a restriction,
+    not a hardened sandbox — a determined expression can still reach dangerous
+    attributes through object traversal, so expression evaluation remains a
+    trusted operation, not an untrusted-input boundary.
     """
     import scapy.all
 
-    return {name: getattr(scapy.all, name) for name in dir(scapy.all)}
+    namespace = {name: getattr(scapy.all, name) for name in dir(scapy.all)}
+    namespace["__builtins__"] = {}
+    return namespace
 
 
 def set_field(data: bytes, linktype: int, spec: str) -> bytes:
@@ -421,20 +427,27 @@ def time_at(times, index) -> str:
     return times[-1] if times else "0"
 
 
-def wirelen_at(wirelens, index, data_len) -> int:
-    """Wire length for a packet; falls back to the captured length."""
-    if index < len(wirelens) and data_len <= wirelens[index]:
+def wirelen_at(wirelens, index, data_len, trust=False) -> int:
+    """Wire length for a packet; falls back to the captured length.
+
+    A stored wire length larger than the data is only honoured when `trust`
+    is set (i.e. it came straight from a capture file and the packet was
+    genuinely wire-truncated). On the edit path the current byte count is
+    authoritative, so shortening a packet no longer leaves it looking
+    wire-truncated.
+    """
+    if trust and index < len(wirelens) and data_len <= wirelens[index]:
         return wirelens[index]
     return data_len
 
 
-def annotate(datas, linktype, limit, times, wirelens):
+def annotate(datas, linktype, limit, times, wirelens, trust_wirelens=False):
     """Build the meta structure for a list of packet byte strings."""
     entries = []
     for index, data in enumerate(datas):
         entry = {
             "t": time_at(times, index),
-            "wl": wirelen_at(wirelens, index, len(data)),
+            "wl": wirelen_at(wirelens, index, len(data), trust=trust_wirelens),
         }
         if index < limit:
             packet = dissect(data, linktype)
@@ -489,7 +502,7 @@ def cmd_load(args) -> None:
     times = [str(p.time) for p in packets]
     wirelens = [getattr(p, "wirelen", None) or len(d) for p, d in zip(packets, datas)]
 
-    meta = annotate(datas, linktype, args.limit, times, wirelens)
+    meta = annotate(datas, linktype, args.limit, times, wirelens, trust_wirelens=True)
     write_meta(args.meta, meta)
     sys.stdout.write("\n".join(data.hex(" ") for data in datas))
     if datas:
@@ -789,7 +802,13 @@ def cmd_mcp(args) -> None:
         if vim is not None and vim in readable:
             data = vim.recv(65536)
             if not data:
-                vim, vim_authed = None, False
+                # Vim went away: fail any in-flight tool calls so the agent
+                # gets an error instead of hanging, and release the socket.
+                for request_id in pending.values():
+                    tool_result(request_id, {"error": "vim disconnected"})
+                pending.clear()
+                vim.close()
+                vim, vim_authed, vim_buffer = None, False, ""
                 continue
             vim_buffer += data.decode("utf-8", errors="replace")
             while vim_buffer.strip():

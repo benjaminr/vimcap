@@ -144,17 +144,28 @@ function! s:update_changed_lines(bufnr, current, cached, packets, linktype, limi
   return all_updated
 endfunction
 
-" Packets were added or removed: re-annotate everything, carrying timestamps
-" across by position (matching what saving does), and keep the sidecar in
-" sync so :w still writes the right timestamps.
+" Packets were added or removed: re-annotate everything, and keep the sidecar
+" in sync so :w still writes the right timestamps. Timestamps map to packets
+" by position, which only holds for the unchanged prefix — past the first
+" changed line we cannot know which old packet a line corresponds to, so we
+" stop carrying exact times there (the helper carries the last known one
+" forward) rather than shuffling an unrelated packet's timestamp onto it.
 function! s:update_all_lines(bufnr, meta, current, linktype, limit) abort
+  let cached = getbufvar(a:bufnr, 'vimcap_lines', [])
+  let prefix = 0
+  while prefix < len(a:current) && prefix < len(cached)
+        \ && a:current[prefix] ==# cached[prefix]
+    let prefix += 1
+  endwhile
+  let times = prefix > 0 ? vimcap#packet_times(a:bufnr)[: prefix - 1] : []
+  let wirelens = prefix > 0 ? vimcap#packet_wirelens(a:bufnr)[: prefix - 1] : []
   let response = s:request({
         \ 'op': 'annotate',
         \ 'linktype': a:linktype,
         \ 'limit': a:limit,
         \ 'packets': a:current,
-        \ 'times': vimcap#packet_times(a:bufnr),
-        \ 'wirelens': vimcap#packet_wirelens(a:bufnr)})
+        \ 'times': times,
+        \ 'wirelens': wirelens})
   if !has_key(response, 'packets')
     return 0
   endif

@@ -268,8 +268,26 @@ let s:agent_filter = vimcap#agent#dispatch('filter', {'expr': 'DNS'})
 call s:check(get(s:agent_filter, 'matching', []) == [2],
       \ 'agent filter reports matching packets')
 call vimcap#agent#dispatch('clear_filter', {})
+let s:bad_filter = vimcap#agent#dispatch('filter', {'expr': 'nonsense('})
+call s:check(has_key(s:bad_filter, 'error'),
+      \ 'agent filter reports a failed expression rather than stale matches')
+call vimcap#agent#dispatch('clear_filter', {})
 let s:agent_ex = vimcap#agent#dispatch('ex', {'command': 'echo 1'})
 call s:check(has_key(s:agent_ex, 'error'), 'agent raw ex commands are gated by default')
+
+" An agent-supplied scapy expression cannot escape to the shell: builtins are
+" stripped, so __import__ is undefined.
+let s:rce = vimcap#agent#dispatch('insert',
+      \ {'expr': "__import__('os') or Ether()"})
+call s:check(has_key(s:rce, 'error'), 'agent craft/insert cannot reach __import__')
+
+" --- timestamps across a structural change -----------------------------------
+" Deleting a non-last packet must not shuffle its timestamp onto a survivor.
+let s:deleted_time = b:vimcap.packets[0].t
+1delete _
+call vimcap#live#flush(bufnr('%'))
+call s:check(get(b:vimcap.packets[0], 't', '') !=# s:deleted_time,
+      \ 'deleting a packet does not shuffle its timestamp onto the survivor')
 
 " --- send is gated -----------------------------------------------------------
 let s:send_msg = substitute(execute('VimcapSend'), '[[:cntrl:]]', ' ', 'g')

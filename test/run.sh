@@ -102,7 +102,22 @@ result = json.loads(server.stdout.readline())
 ok = "packet_count" in result["result"]["content"][0]["text"]
 print(("ok   " if ok else "FAIL ") + "tool result returns to the agent")
 
-fake_vim.close(); server.stdin.close(); server.terminate()
+# A tool call in flight when Vim disconnects must get an error, not hang.
+server.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+    "params": {"name": "overview", "arguments": {}}}) + "\n")
+server.stdin.flush()
+fake_vim.recv(4096)        # the forwarded call
+fake_vim.close()           # Vim goes away without answering
+import select as _select
+ready, _, _ = _select.select([server.stdout], [], [], 5)
+if ready:
+    reply = json.loads(server.stdout.readline())
+    ok = reply.get("id") == 4 and reply["result"].get("isError")
+    print(("ok   " if ok else "FAIL ") + "in-flight call errors when vim disconnects")
+else:
+    print("FAIL in-flight call hangs when vim disconnects")
+
+server.stdin.close(); server.terminate()
 PYEOF
 
 # The edited save must contain the new ttl byte but keep the timestamp.

@@ -588,21 +588,23 @@ function! s:clear_filter() abort
 endfunction
 
 " Fold away packets not matching a layer name ('DNS') or Python expression
-" ('p[TCP].dport == 80'). Bang or no argument clears the filter.
+" ('p[TCP].dport == 80'). Bang or no argument clears the filter. Returns the
+" matching indices, [] when cleared, or v:null when the expression failed.
 function! vimcap#filter(bang, expr) abort
   if a:bang || empty(a:expr)
     call s:clear_filter()
     echo 'filter cleared'
-    return
+    return []
   endif
   let response = vimcap#api(extend(s:base_payload(),
         \ {'op': 'filter', 'expr': a:expr, 'packets': getline(1, '$')}))
   if !has_key(response, 'indices')
-    return
+    return v:null
   endif
   call s:apply_filter_folds(response.indices)
   echo len(response.indices) . '/' . line('$')
         \ . ' packets match (:VimcapFilter! clears)'
+  return response.indices
 endfunction
 
 " Fold to the current packet's TCP/UDP conversation and show its payloads.
@@ -709,17 +711,26 @@ endfunction
 
 " Compare this capture with another, vimdiff-style over the hex lines.
 function! vimcap#diff(path) abort
-  let saved = [get(g:, 'vimcap_panes', v:null), get(g:, 'vimcap_auto_panes', v:null)]
+  " Open the comparison capture quietly: no auto-panes and no agent terminal.
+  let saved = [get(g:, 'vimcap_panes', v:null),
+        \ get(g:, 'vimcap_auto_panes', v:null), get(g:, 'vimcap_auto_agent', v:null)]
   let g:vimcap_panes = []
   let g:vimcap_auto_panes = []
+  let g:vimcap_auto_agent = 0
   try
     diffthis
     execute 'vertical split ' . fnameescape(a:path)
     diffthis
     wincmd p
   finally
-    if saved[0] is v:null | unlet g:vimcap_panes | else | let g:vimcap_panes = saved[0] | endif
-    if saved[1] is v:null | unlet g:vimcap_auto_panes | else | let g:vimcap_auto_panes = saved[1] | endif
+    for [name, value] in [['vimcap_panes', saved[0]], ['vimcap_auto_panes', saved[1]],
+          \ ['vimcap_auto_agent', saved[2]]]
+      if value is v:null
+        execute 'unlet! g:' . name
+      else
+        let g:[name] = value
+      endif
+    endfor
   endtry
 endfunction
 
