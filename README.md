@@ -27,6 +27,32 @@ edit like any other text — except vimcap knows what the bytes *mean*:
 Ordinary Vim editing does the rest: `r` rewrites a nibble, `R` overtypes a
 run of bytes, `dd` drops a packet, `yy`/`p` replays one.
 
+And because scapy is already warm in the helper daemon, the whole toolbox
+comes along:
+
+- **Checksums** — broken IP/TCP/UDP checksums show a `✗` in the statusline;
+  `:VimcapFix` recomputes them (and length fields).
+- **Field editing** — `>f` or `:VimcapSet ttl=12` writes a field by name,
+  fixing checksums around it. `:VimcapNew Ether()/IP()/ICMP()` crafts and
+  appends a packet; `:VimcapCommand` yanks the scapy expression that
+  rebuilds the current one.
+- **Filtering** — `:VimcapFilter DNS` or `:VimcapFilter p[TCP].dport == 80`
+  folds away everything else; `:VimcapFollow` folds to the conversation
+  under the cursor and shows the reassembled stream.
+- **Search & stats** — `:VimcapGrep pattern` loads payload matches into the
+  quickfix list; `:VimcapStats` summarises protocols, conversations, ports.
+- **Captures in, captures out** — `:VimcapSniff en0` appends live traffic
+  (needs capture privileges); `:VimcapSend` replays packets (off unless
+  `g:vimcap_allow_send = 1`); `:VimcapDiff other.pcap` compares captures
+  vimdiff-style; `:VimcapAnon` rewrites MACs/IPs consistently for sharing.
+- **Agentic mode** — Claude Code opens alongside the capture by default
+  (`g:vimcap_auto_agent = 0` to opt out, `:VimcapAgent!` to dismiss), or ask
+  directly: `:VimcapAgent why does packet 12 look corrupt?`. It connects to
+  the session over a local MCP bridge with structured pcap tools. It reads dissections, moves your cursor
+  (every pane follows), fixes checksums, filters and edits packets while
+  you watch — and you chat with it in the terminal as usual. Scoped to
+  capture operations; raw ex commands stay off unless you opt in.
+
 
 Dependencies
 ------------
@@ -95,9 +121,23 @@ let g:vimcap_highlight = 1             " per-layer colouring
 let g:vimcap_annotate_limit = 2000     " packets to dissect for annotations
 let g:vimcap_live = 1                  " re-dissect automatically while editing
 let g:vimcap_live_delay = 300          " debounce (ms) before re-dissection
-let g:vimcap_auto_panes = ['detail', 'ascii', 'bits']   " panes opened on load
 let g:vimcap_mouse = 1                 " enable the mouse if not configured
-let g:vimcap_pane_width = 64           " width of the right-hand pane column
+```
+
+**Layout** — panes open in two regions: a full-height column on the right
+and a stack under the hex. The order, region and size are all yours:
+
+```vim
+" which panes open, and in what order (detail/ascii/bits/utf8/summary/stats)
+let g:vimcap_panes = ['detail', 'ascii', 'bits']
+" move individual panes between regions ('right' column / 'bottom' stack)
+let g:vimcap_pane_region = {'bits': 'right'}
+let g:vimcap_pane_width = 64            " right column width (columns)
+let g:vimcap_pane_height = 10           " bottom pane height (lines)
+let g:vimcap_pane_size = {'detail': 25} " per-pane cross-size override
+" agent terminal placement
+let g:vimcap_agent_position = 'right'   " 'right' | 'left' | 'bottom'
+let g:vimcap_agent_width = 80
 ```
 
 Layer colours are ordinary highlight groups (`VimcapLayer0`–`VimcapLayer3`,

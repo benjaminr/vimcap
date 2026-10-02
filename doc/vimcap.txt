@@ -70,14 +70,17 @@ packet's timestamp.
 
 All commands are buffer-local to capture buffers.
 
-Panes are laid out around the hex window: the dissection tree and packet
-summaries stack in a column on the right (|g:vimcap_pane_width|), while the
-byte-aligned ASCII, binary and UTF-8 views open underneath. All open panes
-keep themselves up to date as the buffer changes, and all of them track the
-cursor: the ASCII and binary views point at the byte under the hex cursor,
-the summary and UTF-8 views at its packet, and the dissection tree re-renders
-for it. The mouse can scroll and focus any pane (|g:vimcap_mouse|); wheeling
-a line-bound pane scrolls the hex window with it.
+Panes are laid out around the hex window in two regions: a full-height
+column on the right (dissection tree, summaries, stream, stats) and a stack
+underneath the hex (the byte-aligned ASCII, binary and UTF-8 views). Which
+panes open on load, in what order, which region each belongs to, and how big
+they are, are all configurable -- see |vimcap-layout|.
+
+All open panes keep themselves up to date as the buffer changes, and all of
+them track the cursor: the ASCII and binary views point at the byte under
+the hex cursor, the summary and UTF-8 views at its packet, and the
+dissection tree re-renders for it. The mouse can scroll and focus any pane
+(|g:vimcap_mouse|); wheeling a line-bound pane scrolls the hex window with it.
 
                                                                 *:VimcapAscii*
 :VimcapAscii            Open a bottom split rendering each byte as printable
@@ -103,13 +106,99 @@ a line-bound pane scrolls the hex window with it.
                                                                *:VimcapDetail*
 :VimcapDetail [proto]   Show the full scapy dissection tree (packet.show())
                         for the packet under the cursor. The pane opens
-                        automatically when a capture loads
-                        (|g:vimcap_auto_panes|), follows the cursor from
-                        packet to packet, and |K| toggles it.
+                        automatically when a capture loads (|g:vimcap_panes|),
+                        follows the cursor from packet to packet, and |K|
+                        toggles it.
 
                                                               *:VimcapRefresh*
 :VimcapRefresh          Re-dissect the buffer contents to update colours,
                         summaries and field annotations after editing.
+
+                                                                  *:VimcapFix*
+:[range]VimcapFix       Recompute checksums and length fields (defaults to
+                        the whole buffer). Packets whose checksums are wrong
+                        are flagged with ✗ in the statusline.
+
+                                                                  *:VimcapSet*
+:VimcapSet {field}={value}
+                        Set a protocol field on the current packet by name,
+                        e.g. ':VimcapSet ttl=12' or ':VimcapSet IP.dst=10.0.0.9'.
+                        Values parse as integers (0x.. works) or strings.
+                        Checksums and lengths are recomputed around the
+                        change. |>f| prompts with the field under the cursor.
+
+                                                                  *:VimcapNew*
+:VimcapNew {expr}       Append a packet built from a scapy expression below
+                        the cursor, e.g.
+                        ':VimcapNew Ether()/IP(dst="10.0.0.1")/ICMP()'.
+
+                                                              *:VimcapCommand*
+:VimcapCommand          Yank the scapy expression that rebuilds the current
+                        packet into the unnamed and clipboard registers --
+                        handy for turning captures into scripts or fixtures.
+
+                                                               *:VimcapFilter*
+:VimcapFilter {expr}    Fold away packets not matching {expr}: a bare layer
+                        name (':VimcapFilter DNS') or a Python expression
+                        over 'p' (':VimcapFilter p[TCP].dport == 80').
+:VimcapFilter[!]        Clear the filter.
+
+                                                               *:VimcapFollow*
+:VimcapFollow           Fold to the current packet's TCP/UDP conversation
+                        and show its reassembled payloads in a pane, with
+                        '->' and '<-' marking the direction.
+
+                                                                 *:VimcapGrep*
+:VimcapGrep {pattern}   Regex-search the decoded packet payloads and load
+                        the matches into the |quickfix| list; each entry
+                        jumps to the matching packet and byte.
+
+                                                                *:VimcapStats*
+:VimcapStats            Capture overview in a pane: packet and byte counts,
+                        duration, protocol stacks, conversations and ports.
+
+                                                                 *:VimcapAnon*
+:VimcapAnon             Consistently rewrite MAC and IP addresses across the
+                        capture (02:00:00:...:NN / 10.99.x.x / fd00::x) for
+                        sharing. Payload contents are left alone; checksums
+                        are recomputed. Undo with |u|.
+
+                                                                *:VimcapSniff*
+:VimcapSniff {iface} [count]
+                        Capture packets from an interface (default 10, with
+                        a |g:vimcap_sniff_timeout| ceiling) and append them
+                        to the buffer. Requires capture privileges.
+
+                                                                 *:VimcapSend*
+:[range]VimcapSend [iface]
+                        Transmit the packets in [range] (default: all) on an
+                        interface. Disabled unless |g:vimcap_allow_send| is
+                        set, and needs raw-socket privileges.
+
+                                                                 *:VimcapDiff*
+:VimcapDiff {file}      Diff this capture against another, vimdiff-style
+                        over the hex lines.
+
+                                                 *:VimcapAgent* *vimcap-agent*
+:VimcapAgent [task]     Agentic mode: open an AI agent (Claude Code by
+                        default, |g:vimcap_agent_cmd|) in a vertical
+                        terminal split, wired to this session over an MCP
+                        bridge. The agent gets structured tools -- read
+                        packets and dissections, move your cursor (all the
+                        panes follow), set fields, fix checksums, filter,
+                        follow streams, grep, edit/insert/delete packets --
+                        and you watch every action live. Give it a [task]
+                        ("why does packet 12 look corrupt?") or let it
+                        explore. Talk to it in the terminal as usual.
+
+                        The bridge listens on 127.0.0.1 with a per-session
+                        token, and the agent can only reach the operations
+                        above; raw ex commands need |g:vimcap_agent_raw|.
+                        Any MCP client can attach the same way: the config
+                        written for Claude Code points at
+                        'python3 vimcap.py mcp --session {file}'.
+
+:VimcapAgent!           Stop the agent session and close its terminal.
 
                                                                  *:VimcapGoto*
 :VimcapGoto {offset}    Move the cursor to a byte offset within the current
@@ -129,6 +218,7 @@ Normal mode (buffer-local):
     h / l           move one byte left/right
     w / b           jump to the next/previous protocol field
     K               toggle the dissection pane (|:VimcapDetail|)
+    >f              edit the field under the cursor (|:VimcapSet|)   *vimcap->f*
     >a              ASCII pane (|:VimcapAscii|)
     >b              binary pane (|:VimcapBits|)
     >u              UTF-8 pane (|:VimcapUtf8|)
@@ -177,18 +267,76 @@ g:vimcap_live_timeout                                  *g:vimcap_live_timeout*
     Milliseconds to wait for the helper daemon before giving up and
     disabling live updates. Default: 3000
 
-g:vimcap_auto_panes                                      *g:vimcap_auto_panes*
-    Panes opened automatically when a capture loads, from "detail",
-    "ascii", "bits", "summary" and "utf8". Set to [] to open nothing.
+                                                             *vimcap-layout*
+Layout and pane configuration ~
+
+g:vimcap_panes                                                *g:vimcap_panes*
+    Ordered list of panes opened automatically when a capture loads, from
+    "detail", "ascii", "bits", "summary", "utf8" and "stats". The order is
+    the order they stack within their region. Set to [] to open nothing.
+    (g:vimcap_auto_panes is accepted as an alias.)
     Default: ['detail', 'ascii', 'bits']
+
+g:vimcap_pane_region                                    *g:vimcap_pane_region*
+    Dictionary overriding which region a pane opens in -- "right" for the
+    full-height column beside the hex, "bottom" for the stack underneath it.
+    Only the panes you name are affected. For example, to put the binary
+    view in the right column: >
+        let g:vimcap_pane_region = {'bits': 'right'}
+<    Defaults: detail/summary/stream/stats -> right; ascii/bits/utf8 ->
+    bottom.
+
+g:vimcap_pane_width                                      *g:vimcap_pane_width*
+    Width (columns) of the right-hand pane column, clamped to half the
+    screen. Default: 64
+
+g:vimcap_pane_height                                    *g:vimcap_pane_height*
+    Height (lines) of a bottom pane, clamped to half the screen.
+    Default: 10
+
+g:vimcap_pane_size                                        *g:vimcap_pane_size*
+    Dictionary overriding the cross-size (height, in lines) of individual
+    panes, e.g. 'let g:vimcap_pane_size = {"detail": 25, "ascii": 6}'.
+    Takes precedence over |g:vimcap_pane_width| / |g:vimcap_pane_height|.
+    Default: {}
 
 g:vimcap_mouse                                                *g:vimcap_mouse*
     Enable the mouse (:set mouse=a) when a capture loads, so panes can be
     scrolled and focused by pointing at them. Only applies when 'mouse' is
     empty, so an existing preference always wins. Default: 1
 
-g:vimcap_pane_width                                      *g:vimcap_pane_width*
-    Width of the right-hand pane column. Default: 64
+g:vimcap_allow_send                                      *g:vimcap_allow_send*
+    Allow |:VimcapSend| to transmit packets. Off by default because it puts
+    traffic on the wire. Default: 0
+
+g:vimcap_sniff_timeout                                *g:vimcap_sniff_timeout*
+    Seconds |:VimcapSniff| waits for its packet count before returning with
+    whatever it has. Default: 15
+
+g:vimcap_agent_cmd                                        *g:vimcap_agent_cmd*
+    The agent CLI |:VimcapAgent| launches. Default: "claude"
+
+g:vimcap_auto_agent                                      *g:vimcap_auto_agent*
+    Start the agent automatically when a capture loads. Only applies in an
+    interactive Vim with the agent CLI installed, and stands down for the
+    rest of the session once dismissed with :VimcapAgent!. Note the agent
+    begins analysing (and spending tokens) as soon as it opens. Default: 1
+
+g:vimcap_agent_raw                                        *g:vimcap_agent_raw*
+    Allow the agent to run raw Vim ex commands through its 'ex' tool. Off
+    by default: the structured tools cover capture work, and raw ex hands
+    the agent your whole editor. Default: 0
+
+g:vimcap_agent_position                              *g:vimcap_agent_position*
+    Where the agent terminal opens: "right" (default), "left" or "bottom".
+
+g:vimcap_agent_width                                    *g:vimcap_agent_width*
+    Width (columns) of the agent terminal when it opens left/right.
+    Default: 80
+
+g:vimcap_agent_height                                  *g:vimcap_agent_height*
+    Height (lines) of the agent terminal when it opens at the bottom.
+    Default: 15
 
 ==============================================================================
 7. HIGHLIGHTING                                          *vimcap-highlighting*
