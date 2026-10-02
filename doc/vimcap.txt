@@ -1,0 +1,162 @@
+*vimcap.txt*  Edit packet captures as hex, with scapy-powered dissection
+
+                                 vimcap 🧢
+
+==============================================================================
+CONTENTS                                                     *vimcap-contents*
+
+    1. Introduction .......................... |vimcap-introduction|
+    2. Requirements .......................... |vimcap-requirements|
+    3. Usage ................................. |vimcap-usage|
+    4. Commands .............................. |vimcap-commands|
+    5. Mappings .............................. |vimcap-mappings|
+    6. Configuration ......................... |vimcap-configuration|
+    7. Highlighting .......................... |vimcap-highlighting|
+    8. Limitations ........................... |vimcap-limitations|
+
+==============================================================================
+1. INTRODUCTION                                          *vimcap-introduction*
+
+vimcap turns Vim into a hex editor for packet captures. Opening a .pcap,
+.pcapng or .cap file shows one packet per line as space-separated hex bytes,
+dissected by scapy:
+
+  - each protocol layer's bytes are coloured differently,
+  - the statusline names the exact field under the cursor
+    (e.g. "pkt 3/120  byte 0x16  IP.ttl = 64"),
+  - |w| and |b| jump between protocol fields instead of words,
+  - |K| opens the full dissection tree for the current packet,
+  - saving writes a valid capture back, preserving the link type and
+    per-packet timestamps (an unedited save is byte-identical).
+
+==============================================================================
+2. REQUIREMENTS                                          *vimcap-requirements*
+
+  - Vim 8.2+ with |textprop| support, or Neovim
+  - Python 3.9+
+  - scapy (https://scapy.net): `pip install scapy`
+
+The Python interpreter is found via |g:vimcap_python| and is invoked as an
+external command; Vim does not need to be compiled with |+python3|.
+
+==============================================================================
+3. USAGE                                                        *vimcap-usage*
+
+Open a capture: >
+
+    vim capture.pcap
+<
+Edit bytes with ordinary Vim editing: |r| to replace a nibble, |R| to
+overtype a run of bytes, |dd| to delete a packet, |yy| and |p| to duplicate
+one. Each line must contain an even number of hex digits when you save.
+
+After editing, annotations (colours, field names) describe the bytes as they
+were last dissected; run |:VimcapRefresh| or save the file to re-dissect.
+
+Write with |:w| as usual. New packets added at the end inherit the previous
+packet's timestamp.
+
+==============================================================================
+4. COMMANDS                                                  *vimcap-commands*
+
+All commands are buffer-local to capture buffers.
+
+                                                                *:VimcapAscii*
+:VimcapAscii            Open a split rendering each byte as printable ASCII,
+                        column-aligned with the hex and bound to its cursor.
+
+                                                                 *:VimcapUtf8*
+:VimcapUtf8             Open a split with each packet decoded as UTF-8 text.
+
+                                                              *:VimcapSummary*
+:VimcapSummary [proto]  Open a split with scapy's one-line summary per
+                        packet, scroll-bound to the hex window. With [proto]
+                        (e.g. "IP"), dissection starts at that protocol
+                        instead of the capture's link type.
+
+                                                               *:VimcapDetail*
+:VimcapDetail [proto]   Show the full scapy dissection tree (packet.show())
+                        for the packet under the cursor. Also on |K|.
+
+                                                              *:VimcapRefresh*
+:VimcapRefresh          Re-dissect the buffer contents to update colours,
+                        summaries and field annotations after editing.
+
+                                                                 *:VimcapGoto*
+:VimcapGoto {offset}    Move the cursor to a byte offset within the current
+                        packet. Accepts decimal (20) or hex (0x14).
+
+                                                                *:VimcapValue*
+:'<,'>VimcapValue       Interpret the visually selected bytes: byte count,
+                        hex run, ASCII text, and (up to 8 bytes) big- and
+                        little-endian integer values. Also on |K| in visual
+                        mode.
+
+==============================================================================
+5. MAPPINGS                                                  *vimcap-mappings*
+
+Normal mode (buffer-local):
+
+    h / l           move one byte left/right
+    w / b           jump to the next/previous protocol field
+    K               dissection tree for the current packet (|:VimcapDetail|)
+    >a              ASCII pane (|:VimcapAscii|)
+    >u              UTF-8 pane (|:VimcapUtf8|)
+    >s              summary pane (|:VimcapSummary|)
+
+Visual mode:
+
+    K               interpret the selected bytes (|:VimcapValue|)
+
+Set |g:vimcap_byte_motions| to 0 to keep Vim's standard h/l/w/b behaviour.
+
+==============================================================================
+6. CONFIGURATION                                        *vimcap-configuration*
+
+g:vimcap_python                                              *g:vimcap_python*
+    Python interpreter used to run the helper script. Point this at a
+    virtualenv that has scapy installed. Default: "python3"
+
+g:vimcap_byte_motions                                  *g:vimcap_byte_motions*
+    Remap h/l to byte motions and w/b to field jumps. Default: 1
+
+g:vimcap_statusline                                      *g:vimcap_statusline*
+    Replace the statusline with packet/byte/field information. Default: 1
+
+g:vimcap_highlight                                        *g:vimcap_highlight*
+    Colour each protocol layer's bytes. Default: 1
+
+g:vimcap_annotate_limit                              *g:vimcap_annotate_limit*
+    Maximum number of packets to dissect for colours, summaries and field
+    annotations (large captures stay fast; packets beyond the limit are
+    still fully editable). Default: 2000
+
+g:vimcap_default_linktype                          *g:vimcap_default_linktype*
+    Link type used when creating a capture from an empty buffer.
+    Default: 1 (Ethernet)
+
+==============================================================================
+7. HIGHLIGHTING                                          *vimcap-highlighting*
+
+Layer colours cycle through four groups, with payloads set apart. Override
+any of them in your vimrc or colourscheme: >
+
+    highlight link VimcapLayer0 Identifier   " link layer
+    highlight link VimcapLayer1 Statement    " network layer
+    highlight link VimcapLayer2 Type         " transport layer
+    highlight link VimcapLayer3 Special      " deeper encapsulations
+    highlight link VimcapPayload String      " Raw / Padding bytes
+    highlight link VimcapCursorByte MatchParen
+<
+==============================================================================
+8. LIMITATIONS                                            *vimcap-limitations*
+
+  - pcapng files are read transparently but are saved in classic pcap
+    format (a warning is shown); Wireshark and tcpdump read both.
+  - Captures whose packets span multiple link types (multi-interface
+    pcapng) are dissected using the first packet's link type.
+  - Nanosecond-precision timestamps are rounded to microseconds on save.
+  - The whole capture is held in the buffer; multi-gigabyte captures are
+    better trimmed first (e.g. with tcpdump -c).
+
+vim:tw=78:ts=8:noet:ft=help:norl:
