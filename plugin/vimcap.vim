@@ -18,6 +18,8 @@ highlight default link VimcapLayer2 Type
 highlight default link VimcapLayer3 Special
 highlight default link VimcapPayload String
 highlight default link VimcapCursorByte MatchParen
+highlight default link VimcapBitOn Statement
+highlight default link VimcapBitOff NonText
 
 augroup vimcap
   autocmd!
