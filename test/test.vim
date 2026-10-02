@@ -77,6 +77,26 @@ call s:check(s:ascii_info.wincol == s:hex_info.wincol
       \ && s:ascii_info.winrow > s:hex_info.winrow,
       \ 'ascii pane opens below the hex window')
 
+" Configurable region: moving 'bits' to the right column puts it beside the
+" hex instead of below it.
+let g:vimcap_pane_region = {'bits': 'right'}
+let s:bits_win = bufwinid(s:bits_buf)
+call win_execute(s:bits_win, 'close')
+call vimcap#bits_pane()
+let s:bits_buf = bufnr('vimcap://bits')
+call s:check(getwininfo(bufwinid(s:bits_buf))[0].wincol > s:hex_info.wincol,
+      \ 'g:vimcap_pane_region moves a pane to the right column')
+unlet g:vimcap_pane_region
+call win_execute(bufwinid(s:bits_buf), 'close')
+
+" Configurable size: a bottom pane honours g:vimcap_pane_height.
+let g:vimcap_pane_height = 6
+call vimcap#bits_pane()
+let s:bits_buf = bufnr('vimcap://bits')
+call s:check(getwininfo(bufwinid(s:bits_buf))[0].height == 6,
+      \ 'g:vimcap_pane_height sizes a bottom pane')
+unlet g:vimcap_pane_height
+
 " The bits pane cursor tracks the byte under the hex cursor; the summary
 " pane follows the packet line.
 call cursor(1, 14 * 3 + 1)
@@ -108,6 +128,39 @@ call s:check(s:value =~# 'BE 80', 'visual value decodes big-endian integer: ' . 
 " --- goto ----------------------------------------------------------------
 VimcapGoto 0x0E
 call s:check(s:cursor_byte() == 14, ':VimcapGoto 0x0E lands on byte 14')
+
+" --- read-only scapy operations --------------------------------------------
+VimcapFilter DNS
+call s:check(foldclosed(1) != -1 && foldclosed(2) == -1,
+      \ 'filter folds non-matching packets')
+VimcapFilter!
+call s:check(foldclosed(1) == -1, 'filter clears')
+
+call cursor(1, 1)
+VimcapFollow
+let s:stream_buf = bufnr('vimcap://stream')
+call s:check(s:stream_buf > 0
+      \ && join(getbufline(s:stream_buf, 1, '$'), ' ') =~# 'GET / HTTP',
+      \ 'follow stream shows the conversation payload')
+call s:check(foldclosed(2) != -1, 'follow folds other conversations')
+VimcapFilter!
+
+VimcapGrep GET
+let s:qf = getqflist()
+call s:check(len(s:qf) == 1 && s:qf[0].lnum == 1 && s:qf[0].col == 54 * 3 + 1,
+      \ 'payload grep fills the quickfix list')
+cclose
+
+VimcapStats
+let s:stats_buf = bufnr('vimcap://stats')
+call s:check(s:stats_buf > 0
+      \ && getbufline(s:stats_buf, 1)[0] =~# '2 packets'
+      \ && join(getbufline(s:stats_buf, 1, '$'), ' ') =~# 'TCP 80',
+      \ 'stats pane summarises the capture')
+
+call cursor(1, 1)
+VimcapCommand
+call s:check(@" =~# '^Ether(' && @" =~# 'TCP', 'copy-as-scapy yanks the packet expression')
 
 " --- unedited write round trip -------------------------------------------
 silent execute 'write ' . fnameescape($VIMCAP_TEST_DIR . '/roundtrip.pcap')
@@ -165,6 +218,66 @@ call s:check(len(getbufline(s:summary_buf, 1, '$')) == 1,
 let s:sidecar = json_decode(join(readfile(b:vimcap_meta_file), ''))
 call s:check(len(s:sidecar.packets) == 1, 'sidecar rewritten after structural change')
 call s:check(s:sidecar.packets[0].t ==# '1700000000.123456', 'timestamp carried through live update')
+
+" --- checksum detection and fixing ------------------------------------------
+let s:pristine = getline(1)
+call cursor(1, 24 * 3 + 1)
+normal! Rff
+call cursor(1, 25 * 3 + 1)
+normal! Rff
+call vimcap#live#flush(bufnr('%'))
+call s:check(index(get(b:vimcap.packets[0], 'bad', []), 'IP.chksum') >= 0,
+      \ 'corrupted checksum is detected')
+call s:check(vimcap#statusline() =~# '✗IP.chksum', 'statusline flags the bad checksum')
+VimcapFix
+call s:check(getline(1) ==# s:pristine, ':VimcapFix restores the correct checksum')
+call s:check(empty(get(b:vimcap.packets[0], 'bad', [])), 'checksum flag cleared after fix')
+
+" --- field editing -----------------------------------------------------------
+call cursor(1, 1)
+VimcapSet ttl=12
+call s:check(getline(1)[22 * 3 : 22 * 3 + 1] ==# '0c', ':VimcapSet writes the field bytes')
+call s:check(empty(get(b:vimcap.packets[0], 'bad', [])),
+      \ ':VimcapSet recomputes checksums around the edit')
+
+" --- crafting ----------------------------------------------------------------
+VimcapNew Ether()/IP(dst='9.9.9.9')/UDP(dport=53)/DNS(rd=1)
+call s:check(line('$') == 2 && get(b:vimcap.packets[1], 's', '') =~# 'DNS',
+      \ ':VimcapNew appends a crafted packet')
+
+" --- anonymisation -----------------------------------------------------------
+VimcapAnon
+let s:src = filter(copy(b:vimcap.packets[0].fields),
+      \ 'v:val[2] ==# "IP" && v:val[3] ==# "src"')[0][4]
+call s:check(s:src =~# '^10\.99\.', ':VimcapAnon rewrites addresses (src=' . s:src . ')')
+call s:check(empty(get(b:vimcap.packets[0], 'bad', [])),
+      \ ':VimcapAnon recomputes checksums')
+
+" --- agent dispatch ----------------------------------------------------------
+let s:overview = vimcap#agent#dispatch('overview', {})
+call s:check(get(s:overview, 'packet_count', 0) == 2
+      \ && len(get(s:overview, 'summaries', [])) == 2,
+      \ 'agent overview reports the capture')
+let s:goto = vimcap#agent#dispatch('goto', {'index': 1, 'byte': 22})
+call s:check(get(s:goto, 'field', '') =~# 'ttl',
+      \ 'agent goto lands on a field: ' . get(s:goto, 'field', ''))
+call vimcap#agent#dispatch('set_field', {'index': 1, 'spec': 'ttl=99'})
+call s:check(getline(1)[22 * 3 : 22 * 3 + 1] ==# '63',
+      \ 'agent set_field edits packet bytes')
+let s:agent_filter = vimcap#agent#dispatch('filter', {'expr': 'DNS'})
+call s:check(get(s:agent_filter, 'matching', []) == [2],
+      \ 'agent filter reports matching packets')
+call vimcap#agent#dispatch('clear_filter', {})
+let s:agent_ex = vimcap#agent#dispatch('ex', {'command': 'echo 1'})
+call s:check(has_key(s:agent_ex, 'error'), 'agent raw ex commands are gated by default')
+
+" --- send is gated -----------------------------------------------------------
+let s:send_msg = substitute(execute('VimcapSend'), '[[:cntrl:]]', ' ', 'g')
+call s:check(s:send_msg =~# 'disabled', 'sending is disabled by default')
+
+" --- capture diff ------------------------------------------------------------
+execute 'VimcapDiff ' . fnameescape($VIMCAP_TEST_DIR . '/roundtrip.pcap')
+call s:check(&diff, ':VimcapDiff enters diff mode')
 
 call writefile(s:results + ['DONE'], $VIMCAP_TEST_OUT)
 quitall!

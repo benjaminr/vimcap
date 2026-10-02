@@ -52,6 +52,59 @@ else
   echo "FAIL unedited save differs from original" >> "$work/all.txt"
 fi
 
+# The MCP agent bridge: handshake, tool listing, and a tool call forwarded
+# to a fake Vim over the channel socket.
+"$python" - "$root/python/vimcap.py" "$work/agent-session.json" >> "$work/all.txt" <<'PYEOF'
+import json, socket, subprocess, sys, time
+
+script, session = sys.argv[1], sys.argv[2]
+server = subprocess.Popen([sys.executable, script, "mcp", "--session", session],
+                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+
+def rpc(method, params=None, request_id=None):
+    message = {"jsonrpc": "2.0", "method": method, "params": params or {}}
+    if request_id is not None:
+        message["id"] = request_id
+    server.stdin.write(json.dumps(message) + "\n")
+    server.stdin.flush()
+    return json.loads(server.stdout.readline()) if request_id is not None else None
+
+init = rpc("initialize", {"protocolVersion": "2024-11-05"}, 1)
+ok = init["result"]["serverInfo"]["name"] == "vimcap"
+print(("ok   " if ok else "FAIL ") + "mcp server initialises")
+
+tools = rpc("tools/list", {}, 2)["result"]["tools"]
+names = {tool["name"] for tool in tools}
+ok = {"overview", "goto", "set_field", "filter"} <= names
+print(("ok   " if ok else "FAIL ") + f"mcp server lists {len(tools)} tools")
+
+for _ in range(50):
+    try:
+        info = json.load(open(session))
+        break
+    except Exception:
+        time.sleep(0.1)
+fake_vim = socket.create_connection(("127.0.0.1", info["port"]))
+fake_vim.sendall((json.dumps([-1, {"auth": info["token"]}]) + "\n").encode())
+auth_reply = json.loads(fake_vim.recv(4096))
+ok = auth_reply == [-1, "ok"]
+print(("ok   " if ok else "FAIL ") + "vim channel authenticates with the token")
+
+# tools/call only answers after vim replies, so write it without reading.
+server.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+    "params": {"name": "overview", "arguments": {}}}) + "\n")
+server.stdin.flush()
+forwarded = json.loads(fake_vim.recv(4096))
+ok = forwarded[:3] == ["call", "vimcap#agent#dispatch", ["overview", {}]]
+print(("ok   " if ok else "FAIL ") + "tool call is forwarded to vim")
+fake_vim.sendall((json.dumps([forwarded[3], {"packet_count": 7}]) + "\n").encode())
+result = json.loads(server.stdout.readline())
+ok = "packet_count" in result["result"]["content"][0]["text"]
+print(("ok   " if ok else "FAIL ") + "tool result returns to the agent")
+
+fake_vim.close(); server.stdin.close(); server.terminate()
+PYEOF
+
 # The edited save must contain the new ttl byte but keep the timestamp.
 "$python" - "$work/sample.pcap" >> "$work/all.txt" <<'PYEOF'
 import sys
