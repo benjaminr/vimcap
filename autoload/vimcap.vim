@@ -5,12 +5,82 @@
 " Configuration helpers
 " ---------------------------------------------------------------------------
 
+" Does this interpreter import scapy? Cached per interpreter string.
+function! s:has_scapy(python) abort
+  if !exists('s:scapy_cache')
+    let s:scapy_cache = {}
+  endif
+  if !has_key(s:scapy_cache, a:python)
+    call system(a:python . ' -c ' . shellescape('import scapy'))
+    let s:scapy_cache[a:python] = !v:shell_error
+  endif
+  return s:scapy_cache[a:python]
+endfunction
+
+" Candidate interpreters, best first: an explicit setting always wins; then
+" the bundled venv from install.sh; then whatever python is on PATH.
+function! s:python_candidates() abort
+  if !empty(get(g:, 'vimcap_python', ''))
+    return [g:vimcap_python]
+  endif
+  let venv = fnamemodify(g:vimcap_script, ':h:h') . '/.venv/bin/python'
+  return filter([venv, 'python3', 'python'],
+        \ 'v:val ==# "python3" || v:val ==# "python" || filereadable(v:val)')
+endfunction
+
+" The interpreter the helper runs under. When g:vimcap_python is unset, pick
+" the first candidate that has scapy (so dissection just works), falling back
+" to the first that merely runs (the pure-Python hex editor still works).
 function! s:python() abort
-  return get(g:, 'vimcap_python', 'python3')
+  if !empty(get(g:, 'vimcap_python', ''))
+    return g:vimcap_python
+  endif
+  if exists('s:resolved_python')
+    return s:resolved_python
+  endif
+  let candidates = s:python_candidates()
+  for python in candidates
+    if s:has_scapy(python)
+      let s:resolved_python = python
+      return python
+    endif
+  endfor
+  let s:resolved_python = get(candidates, 0, 'python3')
+  return s:resolved_python
 endfunction
 
 function! vimcap#annotate_limit() abort
   return get(g:, 'vimcap_annotate_limit', 2000)
+endfunction
+
+" Report the environment vimcap depends on, for quick diagnosis.
+function! vimcap#health() abort
+  let lines = ['vimcap health', '']
+
+  let feats = has('nvim')
+        \ ? ['nvim ' . (has('nvim-0.5') ? 'OK' : '(old)')]
+        \ : map(['terminal', 'channel', 'textprop'],
+        \       {_, f -> f . (has(f) ? '+' : '-')})
+  call add(lines, 'editor:  ' . join(feats, ' '))
+
+  let python = s:python()
+  let pyver = substitute(system(python . ' --version'), '\n', '', 'g')
+  if v:shell_error
+    call add(lines, 'python:  ' . python . '  NOT RUNNABLE')
+  else
+    let scapy = s:has_scapy(python)
+          \ ? substitute(system(python . ' -c '
+          \     . shellescape('import scapy;print(scapy.__version__)')), '\n', '', 'g')
+          \ : 'missing (hex editor works; run install.sh for dissection)'
+    call add(lines, 'python:  ' . python . '  (' . pyver . ')')
+    call add(lines, 'scapy:   ' . scapy)
+  endif
+
+  let agent = get(g:, 'vimcap_agent_cmd', 'claude')
+  call add(lines, 'agent:   ' . agent
+        \ . (executable(agent) ? '  found' : '  not found (:VimcapAgent unavailable)'))
+
+  echo join(lines, "\n")
 endfunction
 
 function! vimcap#linktype(bufnr) abort

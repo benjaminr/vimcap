@@ -27,6 +27,9 @@ augroup vimcap
   autocmd BufWriteCmd *.pcap,*.pcapng,*.cap call vimcap#write(expand('<amatch>'))
 augroup END
 
+" Diagnostics, available anywhere (not just in a capture buffer).
+command! VimcapHealth call vimcap#health()
+
 " Legacy entry points kept for backwards compatibility with old vimcap.
 function! LoadPcap(...) abort
   call vimcap#load(a:0 ? a:1 : expand('%:p'))
