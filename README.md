@@ -47,10 +47,10 @@ comes along:
   vimdiff-style; `:VimcapAnon` rewrites MACs/IPs consistently for sharing.
 - **Agentic mode** — Claude Code opens alongside the capture by default
   (`g:vimcap_auto_agent = 0` to opt out, `:VimcapAgent!` to dismiss), or ask
-  directly: `:VimcapAgent why does packet 12 look corrupt?`. It connects to
-  the session over a local MCP bridge with structured pcap tools. It reads dissections, moves your cursor
-  (every pane follows), fixes checksums, filters and edits packets while
-  you watch — and you chat with it in the terminal as usual. Scoped to
+  directly: `:VimcapAgent why does packet 12 look corrupt?`. It connects over
+  a local MCP bridge with structured pcap tools: it reads dissections, moves
+  your cursor (every pane follows), fixes checksums, filters and edits packets
+  while you watch — and you chat with it in the terminal as usual. Scoped to
   capture operations; raw ex commands stay off unless you opt in.
 
 
@@ -150,6 +150,10 @@ Limitations
 
 - pcapng files are read transparently but saved in classic pcap format.
 - Nanosecond timestamps are rounded to microseconds on save.
+- Inserting/deleting packets mid-capture keeps exact timestamps only up to the
+  first changed packet; later ones are carried forward best-effort.
+- Editing a packet makes its length authoritative, so a wire-truncated packet
+  loses its original wire length when re-saved after an edit.
 - Very large captures are better trimmed first (`tcpdump -r big.pcap -c 5000 -w small.pcap`).
 
 

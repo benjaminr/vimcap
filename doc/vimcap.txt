@@ -350,6 +350,8 @@ any of them in your vimrc or colourscheme: >
     highlight link VimcapLayer3 Special      " deeper encapsulations
     highlight link VimcapPayload String      " Raw / Padding bytes
     highlight link VimcapCursorByte MatchParen
+    highlight link VimcapBitOn Statement     " set bits in the binary pane
+    highlight link VimcapBitOff NonText      " clear bits in the binary pane
 <
 ==============================================================================
 8. LIMITATIONS                                            *vimcap-limitations*
@@ -359,6 +361,12 @@ any of them in your vimrc or colourscheme: >
   - Captures whose packets span multiple link types (multi-interface
     pcapng) are dissected using the first packet's link type.
   - Nanosecond-precision timestamps are rounded to microseconds on save.
+  - Inserting or deleting packets in the middle of a capture cannot keep the
+    exact timestamps of the packets after the edit: times are preserved up to
+    the first changed packet and carried forward from there.
+  - Editing a packet's bytes makes its length authoritative, so a genuinely
+    wire-truncated packet (captured shorter than it was on the wire) loses
+    its original wire length when re-saved after an edit.
   - The whole capture is held in the buffer; multi-gigabyte captures are
     better trimmed first (e.g. with tcpdump -c).
 
