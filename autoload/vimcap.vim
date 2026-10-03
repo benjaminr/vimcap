@@ -1065,6 +1065,9 @@ function! s:open_pane_window(name, existing, hex_win) abort
     " restores the focused pane.
     nnoremap <buffer> <silent> q :call vimcap#close_panes()<CR>
     nnoremap <buffer> <silent> <Tab> :call vimcap#zoom()<CR>
+    " Moving the cursor here drives the hex view and every other pane.
+    execute 'autocmd CursorMoved <buffer> call vimcap#pane_cursor_moved('
+          \ . string(s:pane_name(a:name)) . ')'
   endif
   setlocal nonumber
 endfunction
@@ -1260,6 +1263,7 @@ endfunction
 function! s:detail_lines(bufnr, lnum, proto) abort
   " Prefer the rich, offset-annotated view; it needs no subprocess and works
   " without the live daemon. A specific --proto forces scapy's own show().
+  let s:detail_packet_lnum = a:lnum
   if empty(a:proto)
     let [lines, fieldmap] = s:detail_from_meta(a:bufnr, a:lnum)
     if !empty(lines)
@@ -1421,27 +1425,55 @@ function! s:find_hex_buf() abort
   return bufnr('%')
 endfunction
 
-" Maximise the focused window (hex or any pane), or restore the full layout.
-" Zoom just closes the other windows; restore reopens the workspace. 'hidden'
-" is set over the window changes so an unsaved hex buffer is never abandoned.
+" Close every window except the focused one and the right-hand sidebar panes
+" (detail, welcome, ...), so the focused view grows but the reference sidebar
+" stays. Returns how many windows were closed.
+function! s:zoom_keep_sidebar() abort
+  let keep = win_getid()
+  let closed = 0
+  for nr in reverse(range(1, winnr('$')))
+    let wid = win_getid(nr)
+    if wid == keep
+      continue
+    endif
+    let name = bufname(winbufnr(nr))
+    if name =~# '^vimcap://' && s:pane_region(name) ==# 'right'
+      continue
+    endif
+    call win_execute(wid, 'close')
+    let closed += 1
+  endfor
+  return closed
+endfunction
+
+" Zoom cycle, toggled with <Tab>:
+"   normal -> maximise the focused view but keep the right sidebar
+"          -> full screen (focused view only)
+"          -> back to the full layout
 function! vimcap#zoom() abort
-  if get(t:, 'vimcap_zoom', 0)
-    let hex = t:vimcap_zoom
+  let state = get(t:, 'vimcap_zoom', 0)
+  let save_hidden = &hidden
+  set hidden
+  if state == 0
+    let t:vimcap_zoom_hex = s:find_hex_buf()
+    let closed = s:zoom_keep_sidebar()
+    " Nothing but the sidebar to hide? Jump straight to full screen.
+    let t:vimcap_zoom = closed > 0 ? 1 : 2
+    if t:vimcap_zoom == 2
+      only
+    endif
+  elseif state == 1
+    only
+    let t:vimcap_zoom = 2
+  else
     let t:vimcap_zoom = 0
-    let save_hidden = &hidden
-    set hidden
+    let hex = get(t:, 'vimcap_zoom_hex', s:find_hex_buf())
     if bufexists(hex) && bufnr('%') != hex
       execute 'buffer' hex
     endif
-    let &hidden = save_hidden
     call vimcap#open_workspace()
-  elseif winnr('$') > 1
-    let t:vimcap_zoom = s:find_hex_buf()
-    let save_hidden = &hidden
-    set hidden
-    only
-    let &hidden = save_hidden
   endif
+  let &hidden = save_hidden
 endfunction
 
 " K: show the dissection pane, or put it away if it is already showing.
@@ -1469,6 +1501,45 @@ function! vimcap#track_cursor() abort
   " Re-emphasise the detail field as the byte moves within the same packet
   " (detail_follow only rebuilds when the packet changes).
   call s:detail_highlight_field()
+endfunction
+
+" Reverse link: a cursor move inside a byte/packet-aligned pane drives the hex
+" view (and thus every other pane). s:sync_lock stops the cascade — track_cursor
+" moving this pane's cursor must not re-enter here.
+let s:linked_panes = {'ascii': 1, 'bits': 1, 'utf8': 1, 'summary': 1, 'detail': 1}
+
+function! vimcap#pane_cursor_moved(name) abort
+  if get(s:, 'sync_lock', 0) || !has_key(s:linked_panes, a:name)
+    return
+  endif
+  let hexwin = bufwinid(s:find_hex_buf())
+  if hexwin <= 0
+    return
+  endif
+  let hexline = line('.')
+  let byte = 0
+  if a:name ==# 'ascii'
+    let byte = (virtcol('.') - 1) / 3
+  elseif a:name ==# 'bits'
+    let byte = (virtcol('.') - 1) / 9
+  elseif a:name ==# 'detail'
+    let hexline = get(s:, 'detail_packet_lnum', hexline)
+    for [start, end, idx] in get(s:, 'detail_fieldmap', [])
+      if idx == line('.')
+        let byte = start
+        break
+      endif
+    endfor
+  endif
+  " summary / utf8: one line per packet, so the line maps straight across.
+  let s:sync_lock = 1
+  call win_execute(hexwin, 'call cursor(' . hexline . ', ' . (byte * 3 + 1)
+        \ . ') | call vimcap#track_cursor()')
+  call timer_start(0, function('s:sync_unlock'))
+endfunction
+
+function! s:sync_unlock(timer) abort
+  let s:sync_lock = 0
 endfunction
 
 " Move a pane's cursor to the packet line and, when chars >= 0, to that

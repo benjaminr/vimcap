@@ -17,7 +17,9 @@ edit like any other text — except vimcap knows what the bytes *mean*:
   byte offsets, bad-checksum flags, with the cursor's field highlighted — `K`
   toggles it) and ASCII/binary views underneath. One theme drives every pane
   (`mono`/`neon`/`warm`/`classic` or your own), every pane tracks the cursor,
-  and the mouse can scroll any of them.
+  and the mouse can scroll any of them. The cursor links **both ways** — move
+  in a pane and the hex view (and the others) follow to the same byte/packet.
+  `<Tab>` cycles zoom: maximise-keeping-the-sidebar → fullscreen → restore.
 - **Live re-dissection** — edit a byte and the colours, field names,
   summaries and open panes update themselves moments later, served by a
   persistent scapy process (sub-millisecond per packet once warm).
@@ -120,7 +122,7 @@ vim capture.pcap
 | `>b` / `:VimcapBits` | Binary pane: `█·█·█·█·` per byte, coloured bits     |
 | `>s` / `:VimcapSummary` | One-line scapy summary per packet, scroll-bound  |
 | `>u` / `:VimcapUtf8` | Packets decoded as UTF-8, below the hex             |
-| `<Tab>` / `:VimcapZoom` | Maximise the focused window; `<Tab>` again restores |
+| `<Tab>` / `:VimcapZoom` | Zoom cycle: focus+sidebar → fullscreen → restore |
 | `Q` / `>q` / `:VimcapClose`| Close all panes (`q` from inside a pane too)  |
 | `K` (visual)         | Interpret selected bytes (hex, ASCII, BE/LE ints)   |
 | `:VimcapGoto 0x14`   | Jump to a byte offset within the packet             |

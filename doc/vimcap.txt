@@ -83,11 +83,13 @@ underneath the hex (the byte-aligned ASCII, binary and UTF-8 views). Which
 panes open on load, in what order, which region each belongs to, and how big
 they are, are all configurable -- see |vimcap-layout|.
 
-All open panes keep themselves up to date as the buffer changes, and all of
-them track the cursor: the ASCII and binary views point at the byte under
-the hex cursor, the summary and UTF-8 views at its packet, and the
-dissection tree re-renders for it. The mouse can scroll and focus any pane
-(|g:vimcap_mouse|); wheeling a line-bound pane scrolls the hex window with it.
+All open panes keep themselves up to date as the buffer changes, and the
+cursor is linked both ways: moving in the hex view points the ASCII and binary
+panes at the byte, the summary and UTF-8 panes at the packet, and re-renders
+the dissection tree; and moving the cursor inside any of those panes drives
+the hex view (and the other panes) back to the matching byte or packet. The
+mouse can scroll and focus any pane (|g:vimcap_mouse|); wheeling a line-bound
+pane scrolls the hex window with it.
 
                                                                 *:VimcapAscii*
 :VimcapAscii            Open a bottom split rendering each byte as printable
@@ -131,10 +133,12 @@ dissection tree re-renders for it. The mouse can scroll and focus any pane
                         Q (or >q); from inside any pane press q.
 
                                                                 *:VimcapZoom*
-:VimcapZoom             Maximise the focused window (the hex view or any pane)
-                        to fill the screen; run again to restore the full
-                        layout. Press <Tab> in any vimcap window to toggle it
-                        (also >z from the hex window).
+:VimcapZoom             Zoom cycle, toggled with <Tab> in any vimcap window
+                        (also >z from the hex window): the first press
+                        maximises the focused view but keeps the right-hand
+                        sidebar (welcome + dissection) for reference; the
+                        second hides everything but the focused view; the
+                        third restores the full layout.
 
                                                                  *:VimcapHelp*
 :VimcapHelp             Toggle the welcome splash: the vimcap logo and a quick
@@ -276,8 +280,8 @@ Normal mode (buffer-local):
     >q / Q          close all panes (|:VimcapClose|)                *vimcap->q*
                     (Q is a single key; >q can lag behind the '>' operator)
     q (in a pane)   close all panes from within any pane
-    <Tab>           maximise / restore the focused window (|:VimcapZoom|)
-    >z              maximise / restore (from the hex window)         *vimcap->z*
+    <Tab>           zoom cycle: focus+sidebar / full / restore (|:VimcapZoom|)
+    >z              zoom cycle (from the hex window)                 *vimcap->z*
     >?              toggle the welcome splash (|:VimcapHelp|)        *vimcap->?*
 
 Visual mode:
