@@ -195,7 +195,7 @@ function! vimcap#open_workspace() abort
     endif
   endfor
   call vimcap#update_panes(bufnr('%'))
-  if get(g:, 'vimcap_auto_agent', 1)
+  if get(g:, 'vimcap_auto_agent', 0)
     call vimcap#agent#auto()
   endif
 endfunction

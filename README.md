@@ -46,13 +46,14 @@ comes along:
   sniff lays out your whole workspace); `:VimcapSend` replays packets (off unless
   `g:vimcap_allow_send = 1`); `:VimcapDiff other.pcap` compares captures
   vimdiff-style; `:VimcapAnon` rewrites MACs/IPs consistently for sharing.
-- **Agentic mode** — Claude Code opens alongside the capture by default
-  (`g:vimcap_auto_agent = 0` to opt out, `:VimcapAgent!` to dismiss), or ask
-  directly: `:VimcapAgent why does packet 12 look corrupt?`. It connects over
-  a local MCP bridge with structured pcap tools: it reads dissections, moves
-  your cursor (every pane follows), fixes checksums, filters and edits packets
-  while you watch — and you chat with it in the terminal as usual. Scoped to
-  capture operations; raw ex commands stay off unless you opt in.
+- **Agentic mode** — run `:VimcapAgent why does packet 12 look corrupt?` (or
+  bare `:VimcapAgent`) to open Claude Code alongside the capture, connected
+  over a local MCP bridge with structured pcap tools: it reads dissections,
+  moves your cursor (every pane follows), fixes checksums, filters and edits
+  packets while you watch — and you chat with it in the terminal as usual.
+  Opt in per session, or set `g:vimcap_auto_agent = 1` to open it on every
+  capture. Scoped to capture operations; raw ex commands stay off unless you
+  opt in.
 
 
 Dependencies

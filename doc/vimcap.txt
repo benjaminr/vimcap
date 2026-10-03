@@ -337,10 +337,12 @@ g:vimcap_agent_cmd                                        *g:vimcap_agent_cmd*
     The agent CLI |:VimcapAgent| launches. Default: "claude"
 
 g:vimcap_auto_agent                                      *g:vimcap_auto_agent*
-    Start the agent automatically when a capture loads. Only applies in an
-    interactive Vim with the agent CLI installed, and stands down for the
-    rest of the session once dismissed with :VimcapAgent!. Note the agent
-    begins analysing (and spending tokens) as soon as it opens. Default: 1
+    Start the agent automatically when a capture loads. Off by default --
+    the agent begins analysing (and spending tokens) as soon as it opens, so
+    it is opt-in; run |:VimcapAgent| when you want it. When enabled it only
+    applies in an interactive Vim with the agent CLI installed, and stands
+    down for the rest of the session once dismissed with :VimcapAgent!.
+    Default: 0
 
 g:vimcap_agent_raw                                        *g:vimcap_agent_raw*
     Allow the agent to run raw Vim ex commands through its 'ex' tool. Off
