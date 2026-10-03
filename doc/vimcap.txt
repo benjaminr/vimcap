@@ -127,7 +127,8 @@ dissection tree re-renders for it. The mouse can scroll and focus any pane
 
                                                                *:VimcapClose*
 :VimcapClose            Close every vimcap pane (and the agent terminal),
-                        leaving just the hex window. Also on |>q|.
+                        leaving just the hex window. From the hex window press
+                        Q (or >q); from inside any pane press q.
 
                                                                 *:VimcapTheme*
 :VimcapTheme [name]     Switch the colour theme live (|g:vimcap_theme|), with
@@ -261,7 +262,9 @@ Normal mode (buffer-local):
     >b              binary pane (|:VimcapBits|)
     >u              UTF-8 pane (|:VimcapUtf8|)
     >s              summary pane (|:VimcapSummary|)
-    >q              close all panes (|:VimcapClose|)                *vimcap->q*
+    >q / Q          close all panes (|:VimcapClose|)                *vimcap->q*
+                    (Q is a single key; >q can lag behind the '>' operator)
+    q (in a pane)   close all panes from within any pane
 
 Visual mode:
 

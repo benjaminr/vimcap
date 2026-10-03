@@ -300,6 +300,8 @@ function! vimcap#init() abort
   nnoremap <buffer> <silent> >u :VimcapUtf8<CR>
   nnoremap <buffer> <silent> >s :VimcapSummary<CR>
   nnoremap <buffer> <silent> >q :VimcapClose<CR>
+  " Single-key close too: >q can lag behind Vim's '>' indent operator.
+  nnoremap <buffer> <silent> Q  :VimcapClose<CR>
   nnoremap <buffer> <silent> >f :call vimcap#set_prompt()<CR>
   xnoremap <buffer> <silent> K :VimcapValue<CR>
 
@@ -1027,6 +1029,8 @@ function! s:open_pane_window(name, existing, hex_win) abort
   if a:existing < 0
     setlocal buftype=nofile bufhidden=wipe noswapfile
     silent! execute 'file ' . fnameescape(a:name)
+    " q dismisses the whole workspace from within any pane.
+    nnoremap <buffer> <silent> q :call vimcap#close_panes()<CR>
   endif
   setlocal nonumber
 endfunction
