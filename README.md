@@ -12,11 +12,12 @@ edit like any other text — except vimcap knows what the bytes *mean*:
   cursor as you move: `pkt 3/120  byte 0x16  IP.ttl = 64`.
 - **Fields are words** — `w` and `b` jump between protocol fields; `h` and
   `l` move a byte at a time.
-- **Hex-editor layout** — opening a capture lays out the workspace for you:
-  the scapy protocol tree in a column on the right (`K` toggles it) with
-  ASCII and binary views underneath. Every pane tracks the cursor — the
-  byte under it is highlighted in the binary view, the tree re-renders per
-  packet — and the mouse can scroll any pane.
+- **Themed, coordinated panes** — opening a capture lays out the workspace:
+  a rich dissection pane on the right (styled header, protocol path, per-field
+  byte offsets, bad-checksum flags, with the cursor's field highlighted — `K`
+  toggles it) and ASCII/binary views underneath. One theme drives every pane
+  (`mono`/`neon`/`warm`/`classic` or your own), every pane tracks the cursor,
+  and the mouse can scroll any of them.
 - **Live re-dissection** — edit a byte and the colours, field names,
   summaries and open panes update themselves moments later, served by a
   persistent scapy process (sub-millisecond per packet once warm).
@@ -40,7 +41,8 @@ comes along:
   folds away everything else; `:VimcapFollow` folds to the conversation
   under the cursor and shows the reassembled stream.
 - **Search & stats** — `:VimcapGrep pattern` loads payload matches into the
-  quickfix list; `:VimcapStats` summarises protocols, conversations, ports.
+  quickfix list; `:VimcapStats` charts protocols, conversations and ports as
+  bars.
 - **Captures in, captures out** — `:VimcapSniff en0` streams live traffic
   into the buffer packet-by-packet as it's captured (`:VimcapSniffStop` to end
   early; needs capture privileges; open an empty `vim live.pcap` and the first
@@ -156,9 +158,16 @@ let g:vimcap_agent_position = 'right'   " 'right' | 'left' | 'bottom'
 let g:vimcap_agent_width = 80
 ```
 
-Layer colours are ordinary highlight groups (`VimcapLayer0`–`VimcapLayer3`,
-`VimcapPayload`, `VimcapCursorByte`) — link them to whatever suits your
-colourscheme.
+**Theme** — one palette drives every pane, so the colours read as a set (an
+IP layer is the same colour in the hex, the detail heading and the summary):
+
+```vim
+let g:vimcap_theme = 'mono'   " mono | neon | warm | classic (follows your colourscheme)
+```
+
+Define your own in `g:vimcap_themes`, or override individual groups
+(`VimcapLayer0`–`3`, `VimcapPayload`, `VimcapCursorByte`, `VimcapHeader`,
+`VimcapOffset`, `VimcapBar`, …) — see `:help vimcap-highlighting`.
 
 
 Limitations

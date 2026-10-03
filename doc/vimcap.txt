@@ -111,11 +111,15 @@ dissection tree re-renders for it. The mouse can scroll and focus any pane
                         instead of the capture's link type.
 
                                                                *:VimcapDetail*
-:VimcapDetail [proto]   Show the full scapy dissection tree (packet.show())
-                        for the packet under the cursor. The pane opens
-                        automatically when a capture loads (|g:vimcap_panes|),
-                        follows the cursor from packet to packet, and |K|
-                        toggles it.
+:VimcapDetail [proto]   Dissection pane for the packet under the cursor: a
+                        styled header (packet N/total, timestamp, length), the
+                        protocol path, and each layer's fields with their byte
+                        offsets, values and bad-checksum markers; the field
+                        under the cursor is highlighted and the pane scrolls to
+                        it. The pane opens automatically when a capture loads
+                        (|g:vimcap_panes|), follows the cursor from packet to
+                        packet, and |K| toggles it. With [proto] it falls back
+                        to scapy's own show() starting at that protocol.
 
                                                               *:VimcapRefresh*
 :VimcapRefresh          Re-dissect the buffer contents to update colours,
@@ -366,21 +370,53 @@ g:vimcap_agent_height                                  *g:vimcap_agent_height*
     Height (lines) of the agent terminal when it opens at the bottom.
     Default: 15
 
+g:vimcap_theme                                                *g:vimcap_theme*
+    Colour theme, applied across every pane so the panes read as a set (an
+    IP layer is the same colour in the hex bytes, the detail heading and the
+    summary). One of: >
+        mono      greyscale shades + a single accent (the default)
+        neon      vibrant cyan/green/magenta/amber on a dark ground
+        warm      softer solarized-style amber/teal/olive/rose
+        classic   link to your colourscheme's groups (no fixed colours)
+<    Default: "mono"
+
+g:vimcap_themes                                              *g:vimcap_themes*
+    Dictionary of extra themes (or overrides of the built-ins), each a map of
+    semantic roles to [cterm, "#guihex"] pairs. Roles: accent, error, bright,
+    normal, dim, dimmer, l0, l1, l2, l3, payload. For example: >
+        let g:vimcap_themes = {'ocean': {
+              \ 'accent': [39, '#00afff'], 'error': [203, '#ff5f5f'],
+              \ 'bright': [195, '#d7ffff'], 'normal': [152, '#afd7d7'],
+              \ 'dim': [66, '#5f8787'], 'dimmer': [238, '#444444'],
+              \ 'l0': [51, '#00ffff'], 'l1': [39, '#00afff'],
+              \ 'l2': [63, '#5f5fff'], 'l3': [99, '#875fff'],
+              \ 'payload': [238, '#444444']}}
+        let g:vimcap_theme = 'ocean'
+<    Default: {}
+
 ==============================================================================
 7. HIGHLIGHTING                                          *vimcap-highlighting*
 
-Layer colours cycle through four groups, with payloads set apart. Override
-any of them in your vimrc or colourscheme: >
+Themes (|g:vimcap_theme|) set the highlight groups for you. To tweak colours
+without a whole theme, override any group after vimcap loads (the groups are
+re-applied on |ColorScheme|, so set them in a ColorScheme autocommand to make
+them stick). The groups:
 
-    highlight link VimcapLayer0 Identifier   " link layer
-    highlight link VimcapLayer1 Statement    " network layer
-    highlight link VimcapLayer2 Type         " transport layer
-    highlight link VimcapLayer3 Special      " deeper encapsulations
-    highlight link VimcapPayload String      " Raw / Padding bytes
-    highlight link VimcapCursorByte MatchParen
-    highlight link VimcapBitOn Statement     " set bits in the binary pane
-    highlight link VimcapBitOff NonText      " clear bits in the binary pane
-<
+    VimcapLayer0..3      the protocol layers, outermost first
+    VimcapPayload        Raw / Padding bytes
+    VimcapCursorByte     the byte under the cursor
+    VimcapBitOn/BitOff   set / clear bits in the binary pane
+    VimcapHeader         pane header lines
+    VimcapPath           the Ether > IP > TCP path; VimcapPathSep the ">"
+    VimcapRule           separator rules
+    VimcapLayerName      layer headings in the detail/stats panes
+    VimcapOffset         byte offsets in the detail pane
+    VimcapValue/Field    field values / names
+    VimcapVendor         MAC-vendor annotations
+    VimcapBad            bad-checksum markers
+    VimcapFieldCursor    the detail row for the field under the cursor
+    VimcapBar/BarTrack   filled / empty parts of the stats bars
+
 ==============================================================================
 8. LIMITATIONS                                            *vimcap-limitations*
 
