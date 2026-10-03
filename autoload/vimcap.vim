@@ -179,6 +179,13 @@ function! vimcap#load(path) abort
   call vimcap#init()
   call vimcap#apply_highlights(bufnr('%'))
   call vimcap#open_workspace()
+
+  " An empty session (e.g. a new capture before sniffing) gets the welcome
+  " splash — there is nothing else to show, and it says what to do next.
+  if get(g:, 'vimcap_welcome', 1) && (line('$') == 0 || empty(getline(1)))
+        \ && bufwinid(bufnr('vimcap://help')) < 0
+    call vimcap#welcome()
+  endif
 endfunction
 
 " Open the configured panes (and, if enabled, the agent) for the current
@@ -188,6 +195,11 @@ endfunction
 function! vimcap#open_workspace() abort
   if line('$') <= 0 || empty(getline(1))
     return
+  endif
+  " Content has arrived: the welcome splash has served its purpose.
+  let help = bufwinid(bufnr('vimcap://help'))
+  if help > 0
+    call win_execute(help, 'close')
   endif
   for pane in vimcap#auto_panes()
     if bufwinid(bufnr('vimcap://' . pane)) <= 0
@@ -300,6 +312,7 @@ function! vimcap#init() abort
   nnoremap <buffer> <silent> >u :VimcapUtf8<CR>
   nnoremap <buffer> <silent> >s :VimcapSummary<CR>
   nnoremap <buffer> <silent> >q :VimcapClose<CR>
+  nnoremap <buffer> <silent> >? :call vimcap#welcome_toggle()<CR>
   " Single-key close too: >q can lag behind Vim's '>' indent operator.
   nnoremap <buffer> <silent> Q  :VimcapClose<CR>
   nnoremap <buffer> <silent> >f :call vimcap#set_prompt()<CR>
@@ -946,7 +959,7 @@ endfunction
 
 let s:default_region = {
       \ 'detail': 'right', 'summary': 'right',
-      \ 'stream': 'right', 'stats': 'right',
+      \ 'stream': 'right', 'stats': 'right', 'help': 'right',
       \ 'ascii': 'bottom', 'bits': 'bottom', 'utf8': 'bottom'}
 
 " Panes to open automatically on load, in order. g:vimcap_panes is the
@@ -960,7 +973,8 @@ endfunction
 let s:pane_builders = {
       \ 'detail': 'vimcap#detail', 'ascii': 'vimcap#ascii_pane',
       \ 'bits': 'vimcap#bits_pane', 'utf8': 'vimcap#utf8_pane',
-      \ 'summary': 'vimcap#summary_pane', 'stats': 'vimcap#stats'}
+      \ 'summary': 'vimcap#summary_pane', 'stats': 'vimcap#stats',
+      \ 'help': 'vimcap#welcome'}
 
 function! s:open_named_pane(pane) abort
   if has_key(s:pane_builders, a:pane)
@@ -1302,8 +1316,67 @@ function! vimcap#detail(...) abort
   call s:detail_highlight_field()
 endfunction
 
+" The welcome splash: an ASCII cap logo (🧢) and a quick command reference.
+function! s:welcome_lines() abort
+  return [
+        \ '',
+        \ '              ______',
+        \ "            .'      '.",
+        \ '           /  vimcap  \',
+        \ '          |    hex     |',
+        \ "          '------------'-----.",
+        \ "           '-----------------'",
+        \ '              a pcap hex editor',
+        \ '',
+        \ '  Getting started',
+        \ '    :VimcapSniff en0     capture live from an interface',
+        \ '    K                    toggle the dissection pane',
+        \ '    >a  >b  >s           ascii · binary · summary panes',
+        \ '    w   b                jump between protocol fields',
+        \ '    >f                   edit the field under the cursor',
+        \ '    :VimcapFix           recompute checksums',
+        \ '    :VimcapFilter dns    fold to matching packets',
+        \ '    :VimcapTheme neon    switch the colour theme',
+        \ '    :VimcapAgent         ask an AI agent for help',
+        \ '    Q                    close all panes',
+        \ '',
+        \ '  :help vimcap   ·   :VimcapHealth',
+        \ '']
+endfunction
+
+function! vimcap#welcome() abort
+  call s:pane('vimcap://help', s:welcome_lines(), '')
+  let pane = bufnr('vimcap://help')
+  let winid = pane > 0 ? bufwinid(pane) : -1
+  if winid <= 0
+    return
+  endif
+  if !getbufvar(pane, 'vimcap_help_syntax', 0)
+    call setbufvar(pane, 'vimcap_help_syntax', 1)
+    call win_execute(winid, [
+          \ 'syntax match VimcapHeader /vimcap/',
+          \ 'syntax match VimcapLayerName /^  \u.*/',
+          \ 'syntax match VimcapValue /:\a\+/',
+          \ 'syntax match VimcapField /^\s\+\zs[A-Z>][a-z>]*\ze\s\{2}/',
+          \ 'syntax match VimcapPath /[-'."'".'._\/\\|()]\{2,}/'])
+  endif
+  " Colour the logo block (the first lines, up to the tagline) in the accent.
+  call win_execute(winid,
+        \ 'silent! call matchadd("VimcapPath", "\\%<9l[-'."'".'._/\\\\|() ]\\{3,}")')
+endfunction
+
+function! vimcap#welcome_toggle() abort
+  let winid = bufwinid(bufnr('vimcap://help'))
+  if winid > 0
+    call win_execute(winid, 'close')
+  else
+    call vimcap#welcome()
+  endif
+endfunction
+
 " Close every vimcap pane (and the agent terminal), leaving just the hex.
-let s:all_panes = ['detail', 'summary', 'stream', 'stats', 'ascii', 'bits', 'utf8']
+let s:all_panes = ['detail', 'summary', 'stream', 'stats', 'ascii', 'bits',
+      \ 'utf8', 'help']
 
 function! vimcap#close_panes() abort
   let closed = 0

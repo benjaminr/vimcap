@@ -130,6 +130,12 @@ dissection tree re-renders for it. The mouse can scroll and focus any pane
                         leaving just the hex window. From the hex window press
                         Q (or >q); from inside any pane press q.
 
+                                                                 *:VimcapHelp*
+:VimcapHelp             Toggle the welcome splash: the vimcap logo and a quick
+                        command reference. It opens on its own when you start
+                        an empty session (|g:vimcap_welcome|) and closes once
+                        packets arrive. Also on |>?|.
+
                                                                 *:VimcapTheme*
 :VimcapTheme [name]     Switch the colour theme live (|g:vimcap_theme|), with
                         tab-completion of the available names. With no
@@ -265,6 +271,7 @@ Normal mode (buffer-local):
     >q / Q          close all panes (|:VimcapClose|)                *vimcap->q*
                     (Q is a single key; >q can lag behind the '>' operator)
     q (in a pane)   close all panes from within any pane
+    >?              toggle the welcome splash (|:VimcapHelp|)        *vimcap->?*
 
 Visual mode:
 
@@ -383,6 +390,11 @@ g:vimcap_agent_width                                    *g:vimcap_agent_width*
 g:vimcap_agent_height                                  *g:vimcap_agent_height*
     Height (lines) of the agent terminal when it opens at the bottom.
     Default: 15
+
+g:vimcap_welcome                                            *g:vimcap_welcome*
+    Show the welcome splash (logo + command reference) automatically when a
+    session opens with no packets. Toggle it anytime with |:VimcapHelp|.
+    Default: 1
 
 g:vimcap_theme                                                *g:vimcap_theme*
     Colour theme, applied across every pane so the panes read as a set (an

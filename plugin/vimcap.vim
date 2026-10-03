@@ -27,6 +27,7 @@ augroup END
 
 " Available anywhere (not just in a capture buffer).
 command! VimcapHealth call vimcap#health()
+command! VimcapHelp call vimcap#welcome_toggle()
 command! -nargs=? -complete=customlist,vimcap#theme#complete VimcapTheme
       \ call vimcap#theme#set(<q-args>)
 

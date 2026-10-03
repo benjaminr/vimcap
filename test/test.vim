@@ -310,6 +310,16 @@ call s:check(bufwinid(bufnr('vimcap://detail')) < 0
       \ ':VimcapClose closes every pane')
 call s:check(exists(':VimcapClose') == 2, ':VimcapClose command is available')
 
+" --- welcome splash ----------------------------------------------------------
+call vimcap#welcome()
+let s:help_buf = bufnr('vimcap://help')
+call s:check(s:help_buf > 0
+      \ && join(getbufline(s:help_buf, 1, '$'), "\n") =~# 'vimcap'
+      \ && join(getbufline(s:help_buf, 1, '$'), "\n") =~# ':VimcapSniff',
+      \ 'welcome pane shows the logo and command reference')
+call vimcap#welcome_toggle()
+call s:check(bufwinid(bufnr('vimcap://help')) < 0, 'welcome pane toggles closed')
+
 " --- theme switching ---------------------------------------------------------
 VimcapTheme neon
 call s:check(g:vimcap_theme ==# 'neon', ':VimcapTheme switches the theme live')
@@ -330,7 +340,7 @@ only!
 call s:check(&filetype ==# 'vimcap', 'a new .pcap is initialised as a vimcap buffer')
 call s:check(exists(':VimcapSniff') == 2, ':VimcapSniff is available in a fresh session')
 call s:check(bufwinid(bufnr('vimcap://detail')) < 0,
-      \ 'fresh session starts with no panes open')
+      \ 'fresh session starts with no dissection panes open')
 " Simulate what vimcap#sniff does after a capture: fill the empty buffer and
 " lay out the workspace.
 let s:captured = 'aa bb cc dd ee 02 aa bb cc dd ee 01 08 00 45 00 00 28'
