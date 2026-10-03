@@ -55,9 +55,12 @@ call s:check(s:bits_buf > 0
 
 call vimcap#detail()
 let s:detail_buf = bufnr('vimcap://detail')
-call s:check(s:detail_buf > 0
-      \ && join(getbufline(s:detail_buf, 1, '$'), "\n") =~# '###\[ Ethernet \]###',
-      \ 'detail pane shows the scapy dissection tree')
+let s:detail_text = join(getbufline(s:detail_buf, 1, '$'), "\n")
+call s:check(s:detail_buf > 0 && s:detail_text =~# '^Packet 1/'
+      \ && s:detail_text =~# '▸ Ethernet' && s:detail_text =~# '▸ IP',
+      \ 'detail pane shows the rich dissection with layer headings')
+call s:check(s:detail_text =~# 'Ethernet › IP › TCP', 'detail pane shows the protocol path')
+call s:check(s:detail_text =~# '0x16\s\+ttl', 'detail pane shows per-field byte offsets')
 
 call vimcap#summary_pane('')
 let s:summary_buf = bufnr('vimcap://summary')
