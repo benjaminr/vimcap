@@ -907,6 +907,16 @@ def cmd_mcp(args) -> None:
     session.unlink(missing_ok=True)
 
 
+def _is_permission_error(error) -> bool:
+    """scapy wraps capture-device permission failures in its own exception
+    types, so recognise them by message as well as by PermissionError."""
+    if isinstance(error, PermissionError):
+        return True
+    text = str(error).lower()
+    return "permission denied" in text or "operation not permitted" in text \
+        or "bpf" in text
+
+
 def cmd_sniff(args) -> None:
     """Capture packets from an interface and print them as hex lines."""
     require_scapy("sniffing")
@@ -915,10 +925,11 @@ def cmd_sniff(args) -> None:
     try:
         packets = sniff(iface=args.iface or None, count=args.count,
                         timeout=args.timeout)
-    except PermissionError:
-        fail("sniffing needs capture privileges (try running vim with sudo, "
-             "or grant your user access to the capture device)")
     except Exception as error:
+        if _is_permission_error(error):
+            fail("sniffing needs capture privileges (run vim with sudo, or "
+                 "grant your user access to the capture device, e.g. on macOS "
+                 "add yourself to the access_bpf group)")
         fail(f"sniff failed: {error}")
     for packet in packets:
         print(raw(packet).hex(" "))
@@ -933,9 +944,9 @@ def cmd_send(args) -> None:
     packets = [dissect(data, args.linktype) for data in datas]
     try:
         sendp(packets, iface=args.iface or None, verbose=False)
-    except PermissionError:
-        fail("sending needs raw-socket privileges")
     except Exception as error:
+        if _is_permission_error(error):
+            fail("sending needs raw-socket privileges (run vim with sudo)")
         fail(f"send failed: {error}")
     print(f"{len(packets)} packets sent")
 
