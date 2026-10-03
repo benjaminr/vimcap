@@ -1023,7 +1023,7 @@ function! vimcap#auto_panes() abort
   if exists('g:vimcap_auto_panes')
     return g:vimcap_auto_panes
   endif
-  let panes = ['detail', 'ascii', 'bits']
+  let panes = ['detail', 'stats', 'ascii', 'bits']
   if get(g:, 'vimcap_welcome', 1)
     call add(panes, 'help')
   endif
@@ -1073,29 +1073,42 @@ function! s:pane_height(name) abort
 endfunction
 
 " An open pane window in the same region, to stack the new pane beneath.
-function! s:region_window(region) abort
+" The open window at the given vertical end ('top' or 'bottom') of a region,
+" or -1 when the region is empty. Picking by screen row (rather than trusting
+" the unordered pane dict) means a new pane can always anchor to the real edge
+" of the column.
+function! s:region_window(region, ...) abort
+  let want_top = a:0 > 0 && a:1 ==# 'top'
+  let chosen = -1
+  let chosen_row = -1
   for name in keys(s:default_region) + keys(get(g:, 'vimcap_pane_region', {}))
     let winid = s:pane_winid(name)
-    if winid > 0 && s:pane_region('vimcap://' . name) ==# a:region
-      return winid
+    if winid <= 0 || s:pane_region('vimcap://' . name) !=# a:region
+      continue
+    endif
+    let row = win_screenpos(winid)[0]
+    if chosen < 0 || (want_top ? row < chosen_row : row > chosen_row)
+      let [chosen, chosen_row] = [winid, row]
     endif
   endfor
-  return -1
+  return chosen
 endfunction
 
 " Open a window for a pane in its configured region, sized from config.
 " hex_win anchors 'bottom' panes so they stay under the hex, not full width.
 function! s:open_pane_window(name, existing, hex_win) abort
   let region = s:pane_region(a:name)
-  let neighbour = s:region_window(region)
+  " The welcome splash anchors to the top of its column; everything else
+  " appends beneath the bottom pane, so each stacks in the order it opened.
+  let is_help = s:pane_name(a:name) ==# 'help'
+  let neighbour = s:region_window(region, is_help ? 'top' : 'bottom')
   let open = a:existing > 0 ? ('sbuffer ' . a:existing) : 'new'
 
   if neighbour > 0
-    " Stack within the region. The welcome splash sits above its neighbour as
-    " a compact strip; everything else stacks beneath. Stacked panes are sized
-    " by height (the column width is already fixed by the first pane).
+    " Stack within the region. Stacked panes are sized by height (the column
+    " width is already fixed by the first pane).
     call win_gotoid(neighbour)
-    execute (s:pane_name(a:name) ==# 'help' ? 'aboveleft ' : 'belowright ') . open
+    execute (is_help ? 'aboveleft ' : 'belowright ') . open
     execute 'resize' s:pane_height(a:name)
   elseif region ==# 'right'
     execute 'botright vertical ' . open
