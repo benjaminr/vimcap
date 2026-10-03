@@ -319,6 +319,26 @@ call s:check(bufwinid(bufnr('vimcap://detail')) > 0
       \ && bufwinid(bufnr('vimcap://bits')) > 0,
       \ 'populating an empty session opens the configured panes')
 
+" --- streaming sniff appends packets live --------------------------------
+" vimcap#sniff_feed is what each captured packet runs through; feeding packets
+" one at a time must grow the buffer incrementally (not all at once).
+new
+execute 'edit ' . fnameescape($VIMCAP_TEST_DIR . '/stream.pcap')
+only!
+let s:p = 'aa bb cc dd ee 02 aa bb cc dd ee 01 08 00 45 00 00 28 00 01 00'
+      \ . ' 00 40 06 3a f4 0a 00 00 01 0a 00 00 02 00 50 00 50 00 00 00 00'
+      \ . ' 00 00 00 00 50 02 20 00 00 00 00 00'
+call vimcap#sniff_feed(bufnr('%'), s:p)
+call s:check(line('$') == 1 && getline(1) =~# '^aa bb',
+      \ 'first streamed packet replaces the blank line')
+call vimcap#sniff_feed(bufnr('%'), s:p)
+call vimcap#sniff_feed(bufnr('%'), s:p)
+call s:check(line('$') == 3, 'further streamed packets append live, one per line')
+call vimcap#live#flush(bufnr('%'))
+call s:check(len(b:vimcap.packets) == 3 && get(b:vimcap.packets[2], 's', '') =~# 'TCP',
+      \ 'streamed packets dissect once annotation catches up')
+call s:check(exists(':VimcapSniffStop') == 2, ':VimcapSniffStop is available')
+
 " --- capture diff ------------------------------------------------------------
 only!
 execute 'VimcapDiff ' . fnameescape($VIMCAP_TEST_DIR . '/roundtrip.pcap')

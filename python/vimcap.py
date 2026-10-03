@@ -918,21 +918,26 @@ def _is_permission_error(error) -> bool:
 
 
 def cmd_sniff(args) -> None:
-    """Capture packets from an interface and print them as hex lines."""
+    """Capture packets from an interface, streaming each as a hex line.
+
+    Packets are printed (and flushed) as they arrive rather than collected and
+    dumped at the end, so the plugin can show them live.
+    """
     require_scapy("sniffing")
     from scapy.all import sniff
 
+    def emit(packet):
+        print(raw(packet).hex(" "), flush=True)
+
     try:
-        packets = sniff(iface=args.iface or None, count=args.count,
-                        timeout=args.timeout)
+        sniff(iface=args.iface or None, count=args.count,
+              timeout=args.timeout, prn=emit, store=False)
     except Exception as error:
         if _is_permission_error(error):
             fail("sniffing needs capture privileges (run vim with sudo, or "
                  "grant your user access to the capture device, e.g. on macOS "
                  "add yourself to the access_bpf group)")
         fail(f"sniff failed: {error}")
-    for packet in packets:
-        print(raw(packet).hex(" "))
 
 
 def cmd_send(args) -> None:

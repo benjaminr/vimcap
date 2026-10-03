@@ -41,9 +41,10 @@ comes along:
   under the cursor and shows the reassembled stream.
 - **Search & stats** — `:VimcapGrep pattern` loads payload matches into the
   quickfix list; `:VimcapStats` summarises protocols, conversations, ports.
-- **Captures in, captures out** — `:VimcapSniff en0` appends live traffic
-  (needs capture privileges; open an empty `vim live.pcap` and the first
-  sniff lays out your whole workspace); `:VimcapSend` replays packets (off unless
+- **Captures in, captures out** — `:VimcapSniff en0` streams live traffic
+  into the buffer packet-by-packet as it's captured (`:VimcapSniffStop` to end
+  early; needs capture privileges; open an empty `vim live.pcap` and the first
+  packets lay out your whole workspace); `:VimcapSend` replays packets (off unless
   `g:vimcap_allow_send = 1`); `:VimcapDiff other.pcap` compares captures
   vimdiff-style; `:VimcapAnon` rewrites MACs/IPs consistently for sharing.
 - **Agentic mode** — run `:VimcapAgent why does packet 12 look corrupt?` (or

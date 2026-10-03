@@ -288,6 +288,7 @@ function! vimcap#init() abort
   command! -buffer                VimcapStats    call vimcap#stats()
   command! -buffer                VimcapAnon     call vimcap#anonymise()
   command! -buffer -nargs=+       VimcapSniff    call vimcap#sniff(<q-args>)
+  command! -buffer                VimcapSniffStop call vimcap#sniff_stop()
   command! -buffer -range=% -nargs=? VimcapSend  call vimcap#send(<line1>, <line2>, <q-args>)
   command! -buffer -nargs=1 -complete=file VimcapDiff call vimcap#diff(<q-args>)
   command! -buffer -bang -nargs=? VimcapAgent call vimcap#agent#start(<bang>0, <q-args>)
@@ -743,15 +744,109 @@ function! vimcap#sniff(argstring) abort
   let parts = split(a:argstring)
   let iface = get(parts, 0, '')
   let packet_count = get(parts, 1, '10')
-  if packet_count !~# '^\d\+$'
+  if empty(iface) || packet_count !~# '^\d\+$'
     call s:error('vimcap: usage :VimcapSniff {iface} [count]')
     return
   endif
-  echo 'sniffing ' . iface . '...'
+  let args = ['sniff', '--iface', iface, '--count', packet_count,
+        \ '--timeout', string(get(g:, 'vimcap_sniff_timeout', 15))]
+
+  " Vim with +job: stream packets into the buffer as they are captured. Other
+  " runtimes (Neovim) fall back to a blocking capture that appears at the end.
+  if !has('job')
+    call s:sniff_blocking(args)
+    return
+  endif
+  if exists('b:vimcap_sniff_job') && job_status(b:vimcap_sniff_job) ==# 'run'
+    call s:error('vimcap: a sniff is already running (:VimcapSniffStop)')
+    return
+  endif
+  let b:vimcap_sniff_count = 0
+  let b:vimcap_sniff_job = job_start([s:python(), g:vimcap_script] + args, {
+        \ 'out_mode': 'nl',
+        \ 'out_cb': function('s:sniff_out', [bufnr('%')]),
+        \ 'err_cb': function('s:sniff_err'),
+        \ 'exit_cb': function('s:sniff_exit', [bufnr('%')])})
+  echo 'sniffing ' . iface . '... (:VimcapSniffStop to end early)'
+endfunction
+
+function! s:sniff_out(bufnr, channel, line) abort
+  call vimcap#sniff_feed(a:bufnr, a:line)
+endfunction
+
+" Append one captured packet line as it arrives, then debounce annotation so
+" the colours/panes catch up without re-dissecting on every single packet.
+" Public so the streaming path can be exercised without a live capture.
+function! vimcap#sniff_feed(bufnr, line) abort
+  if a:line !~? '^\s*\%(\x\x\s*\)\+$'
+    return
+  endif
+  let hex = substitute(tolower(trim(a:line)), '\s\+', ' ', 'g')
+  if getbufinfo(a:bufnr)[0].linecount == 1
+        \ && empty(get(getbufline(a:bufnr, 1), 0, ''))
+    call setbufline(a:bufnr, 1, hex)
+  else
+    call appendbufline(a:bufnr, '$', hex)
+  endif
+  call setbufvar(a:bufnr, 'vimcap_sniff_count',
+        \ getbufvar(a:bufnr, 'vimcap_sniff_count', 0) + 1)
+  call s:sniff_schedule(a:bufnr)
+endfunction
+
+function! s:sniff_err(channel, line) abort
+  if a:line =~# 'vimcap:'
+    call s:error(a:line)
+  endif
+endfunction
+
+function! s:sniff_exit(bufnr, job, status) abort
+  call s:sniff_annotate(a:bufnr)
+  call setbufvar(a:bufnr, 'vimcap_sniff_job', v:null)
+  let n = getbufvar(a:bufnr, 'vimcap_sniff_count', 0)
+  echo n == 0 ? 'no packets captured' : (n . ' packets captured')
+endfunction
+
+" Debounced annotation of the packets streamed so far.
+function! s:sniff_schedule(bufnr) abort
+  let pending = getbufvar(a:bufnr, 'vimcap_sniff_timer', -1)
+  if pending != -1
+    call timer_stop(pending)
+  endif
+  call setbufvar(a:bufnr, 'vimcap_sniff_timer',
+        \ timer_start(150, function('s:sniff_annotate_timer', [a:bufnr])))
+endfunction
+
+function! s:sniff_annotate_timer(bufnr, timer) abort
+  call s:sniff_annotate(a:bufnr)
+endfunction
+
+" Re-dissect and lay out the workspace in the capture window's context, so
+" window operations behave even though we are driven by an async callback.
+function! s:sniff_annotate(bufnr) abort
+  let winid = bufwinid(a:bufnr)
+  if winid <= 0
+    return
+  endif
+  call win_execute(winid,
+        \ 'call vimcap#live#flush(' . a:bufnr . ') | call vimcap#open_workspace()')
+  redraw
+endfunction
+
+function! vimcap#sniff_stop() abort
+  if exists('b:vimcap_sniff_job') && type(b:vimcap_sniff_job) == v:t_job
+        \ && job_status(b:vimcap_sniff_job) ==# 'run'
+    call job_stop(b:vimcap_sniff_job)
+    echo 'sniff stopped'
+  else
+    echo 'no sniff running'
+  endif
+endfunction
+
+" Blocking capture for runtimes without +job: everything appears at the end.
+function! s:sniff_blocking(args) abort
+  echo 'sniffing ' . a:args[2] . '...'
   try
-    let out = s:run('sniff --iface ' . shellescape(iface)
-          \ . ' --count ' . packet_count
-          \ . ' --timeout ' . get(g:, 'vimcap_sniff_timeout', 15), v:null)
+    let out = s:run(join(map(copy(a:args), 'shellescape(v:val)')), v:null)
   catch /^vimcap:/
     call s:error(v:exception)
     return
@@ -760,14 +855,12 @@ function! vimcap#sniff(argstring) abort
     echo 'no packets captured'
     return
   endif
-  " Replace the lone blank line of a fresh buffer; otherwise append.
   if line('$') == 1 && empty(getline(1))
     call setline(1, out)
   else
     call append(line('$'), out)
   endif
   call vimcap#live#flush(bufnr('%'))
-  " Lay out the workspace if this sniff populated an empty session.
   call vimcap#open_workspace()
   echo len(out) . ' packets captured'
 endfunction
