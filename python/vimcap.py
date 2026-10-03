@@ -213,7 +213,14 @@ def layer_and_field_ranges(packet: Packet):
             end_byte = (end_bit + 7) // 8
             if end_byte <= start_byte or start_byte >= len(layer_bytes):
                 continue
-            value = _format_value(current.getfieldval(field.name))
+            raw_value = current.getfieldval(field.name)
+            try:
+                # i2repr gives scapy's human rendering (IPv4, http, 0x3af4),
+                # matching show(); fall back to the raw value if it fails.
+                value = field.i2repr(current, raw_value)
+            except Exception:
+                value = str(raw_value)
+            value = _format_value(value)
             if field.name in ("src", "dst") and current.name == "Ethernet":
                 vendor = mac_vendor(value)
                 if vendor:
@@ -443,13 +450,25 @@ def capture_stats(datas, linktype, times):
             duration = f" over {span}s"
         except Exception:
             pass
-    lines = [f"{len(datas)} packets, {total_bytes} bytes{duration}", ""]
-    for title, counter in (("Protocols", stacks), ("Conversations", talkers),
-                           ("Ports", ports)):
-        lines.append(title)
-        for key, count in counter.most_common(10):
-            lines.append(f"  {count:5d}  {key}")
-        lines.append("")
+
+    def section(title, counter, label_width=22, bar_width=16):
+        rows = counter.most_common(10)
+        if not rows:
+            return []
+        top = rows[0][1]
+        total = sum(counter.values()) or 1
+        out = [title]
+        for key, count in rows:
+            filled = round(bar_width * count / top) if top else 0
+            bar = "█" * filled + "░" * (bar_width - filled)
+            label = key if len(key) <= label_width else key[:label_width - 1] + "…"
+            out.append(f"  {label:<{label_width}} {bar} {count:>4}  {100 * count // total:>3}%")
+        return out + [""]
+
+    lines = [f"{len(datas)} packets · {total_bytes} bytes{duration}", ""]
+    lines += section("Protocols", stacks)
+    lines += section("Conversations", talkers, label_width=30)
+    lines += section("Ports", ports, label_width=14)
     return lines
 
 
