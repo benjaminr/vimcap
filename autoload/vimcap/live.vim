@@ -143,7 +143,8 @@ function! s:update_changed_lines(bufnr, current, cached, packets, linktype, limi
           \ 'hex': a:current[index],
           \ 'linktype': a:linktype,
           \ 't': get(entry, 't', '0'),
-          \ 'wl': get(entry, 'wl', 0)})
+          \ 'wl': get(entry, 'wl', 0),
+          \ 'cl': get(entry, 'cl', get(entry, 'wl', 0))})
     if has_key(response, 'packet')
       let a:packets[index] = response.packet
       call vimcap#highlight_line(a:bufnr, index + 1)
@@ -169,13 +170,15 @@ function! s:update_all_lines(bufnr, meta, current, linktype, limit) abort
   endwhile
   let times = prefix > 0 ? vimcap#packet_times(a:bufnr)[: prefix - 1] : []
   let wirelens = prefix > 0 ? vimcap#packet_wirelens(a:bufnr)[: prefix - 1] : []
+  let caplens = prefix > 0 ? vimcap#packet_caplens(a:bufnr)[: prefix - 1] : []
   let response = s:request({
         \ 'op': 'annotate',
         \ 'linktype': a:linktype,
         \ 'limit': a:limit,
         \ 'packets': a:current,
         \ 'times': times,
-        \ 'wirelens': wirelens})
+        \ 'wirelens': wirelens,
+        \ 'caplens': caplens})
   if !has_key(response, 'packets')
     return 0
   endif
@@ -198,7 +201,7 @@ function! s:daemon() abort
     return s:job
   endif
   let s:job = job_start(
-        \ [get(g:, 'vimcap_python', 'python3'), g:vimcap_script, 'serve'],
+        \ [vimcap#python(), g:vimcap_script, 'serve'],
         \ {'mode': 'nl'})
   return s:job
 endfunction

@@ -49,6 +49,12 @@ function! s:python() abort
   return s:resolved_python
 endfunction
 
+" Public accessor so the live daemon and agent bridge use the same resolved
+" interpreter as everything else (not a hardcoded python3 that may lack scapy).
+function! vimcap#python() abort
+  return s:python()
+endfunction
+
 function! vimcap#annotate_limit() abort
   return get(g:, 'vimcap_annotate_limit', 2000)
 endfunction
@@ -141,6 +147,10 @@ endfunction
 
 function! vimcap#packet_wirelens(bufnr) abort
   return map(copy(s:packets(a:bufnr)), {_, p -> get(p, 'wl', 0)})
+endfunction
+
+function! vimcap#packet_caplens(bufnr) abort
+  return map(copy(s:packets(a:bufnr)), {_, p -> get(p, 'cl', get(p, 'wl', 0))})
 endfunction
 
 function! vimcap#packet_summaries(bufnr) abort
@@ -1565,6 +1575,10 @@ function! s:do_track() abort
   let lnum = line('.')
   let byte = s:cursor_byte()
   let s:last_track = [lnum, byte]
+  " Record which capture these shared panes now reflect, so the reverse link
+  " drives this buffer (not whichever hex window s:find_hex_buf happens upon)
+  " when several captures are open at once.
+  let s:sync_src = bufnr('%')
   call s:highlight_cursor_byte(lnum, byte)
   for [name, spec] in items(s:byte_panes)
     call s:track_pane('vimcap://' . name, lnum, byte * spec.stride + 1, spec.bytelen)
@@ -1608,7 +1622,12 @@ function! vimcap#pane_cursor_moved(name) abort
   if [hexline, byte] == get(s:, 'last_track', [])
     return
   endif
-  let hexwin = bufwinid(s:find_hex_buf())
+  " Drive the capture these panes currently reflect; fall back to a scan.
+  let src = get(s:, 'sync_src', 0)
+  let hexwin = src > 0 ? bufwinid(src) : -1
+  if hexwin <= 0
+    let hexwin = bufwinid(s:find_hex_buf())
+  endif
   if hexwin <= 0
     return
   endif
@@ -1654,5 +1673,5 @@ function! vimcap#detail_follow() abort
   call s:sync_pane('vimcap://detail', s:detail_lines(bufnr('%'), line('.'),
         \ get(b:, 'vimcap_detail_proto', '')))
   call s:detail_apply_syntax()
-  call s:detail_highlight_field()
+  " s:do_track (the only caller) highlights the field itself right after.
 endfunction

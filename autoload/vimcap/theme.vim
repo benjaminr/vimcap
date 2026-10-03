@@ -108,13 +108,16 @@ function! vimcap#theme#apply() abort
     return
   endif
 
-  let palette = get(get(g:, 'vimcap_themes', {}), name, get(s:themes, name, {}))
-  if empty(palette)
+  let custom = get(get(g:, 'vimcap_themes', {}), name, {})
+  let palette = get(s:themes, name, {})
+  if empty(custom) && empty(palette)
     echohl WarningMsg
     echomsg 'vimcap: unknown theme ' . string(name) . '; using mono'
     echohl None
-    let palette = s:themes.mono
   endif
+  " Fill any missing roles from mono, so a partial custom theme (overriding
+  " just a colour or two) never leaves a role undefined.
+  let palette = extend(extend(copy(s:themes.mono), palette), custom)
 
   for [group, spec] in items(s:groups)
     let [role, attr] = spec

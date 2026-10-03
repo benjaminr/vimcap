@@ -77,7 +77,7 @@ function! vimcap#agent#start(bang, prompt) abort
   let s:session_file = tempname() . '.vimcap-agent.json'
   let mcp_config = tempname() . '.vimcap-mcp.json'
   call writefile([json_encode({'mcpServers': {'vimcap': {
-        \ 'command': get(g:, 'vimcap_python', 'python3'),
+        \ 'command': vimcap#python(),
         \ 'args': [g:vimcap_script, 'mcp', '--session', s:session_file]}}})],
         \ mcp_config)
 

@@ -112,12 +112,19 @@ def native_write(path, linktype, records) -> None:
     Path(path).write_bytes(out)
 
 
-def packet_record(times, wirelens, index, data):
-    """Resolve one packet's (sec, usec, wirelen) for writing."""
+def packet_record(times, wirelens, caplens, index, data):
+    """Resolve one packet's (sec, usec, wirelen) for writing.
+
+    The original wire length is preserved only for a packet still at its
+    captured length (unedited); once the bytes are edited, the current length
+    is authoritative so the packet is not written as wire-truncated.
+    """
     stamp = Decimal(time_at(times, index))
     seconds = int(stamp)
     microseconds = int((stamp - seconds) * 1_000_000)
-    return seconds, microseconds, wirelen_at(wirelens, index, len(data))
+    unedited = len(data) == carry_at(caplens, index, len(data))
+    wirelen = carry_at(wirelens, index, len(data)) if unedited else len(data)
+    return seconds, microseconds, max(wirelen, len(data))
 
 
 def parse_hex_lines(lines) -> list:
@@ -249,12 +256,14 @@ def fix_bytes(data: bytes, linktype: int, keep=None) -> bytes:
 
     Deleting a dissected field resets it to its default, and scapy fills
     checksum/length defaults in while rebuilding. `keep` is an optional
-    (layer, field_name) left untouched, for when a user sets one by hand.
+    (layer_index, field_name) left untouched, for when a user sets it by hand;
+    the index is into walk_layers() so it survives this fresh dissection.
     """
     packet = dissect(data, linktype)
-    for layer in walk_layers(packet):
+    keep_index, keep_name = keep if keep else (-1, None)
+    for index, layer in enumerate(walk_layers(packet)):
         for name in FIXABLE_FIELDS:
-            if (layer, name) != (keep or (None, None)) and name in layer.fields:
+            if (index, name) != (keep_index, keep_name) and name in layer.fields:
                 try:
                     delattr(layer, name)
                 except Exception:
@@ -324,13 +333,13 @@ def set_field(data: bytes, linktype: int, spec: str) -> bytes:
     layer_name, _, field_name = name.rpartition(".")
 
     packet = dissect(data, linktype)
-    target = None
-    for layer in walk_layers(packet):
+    target, target_index = None, -1
+    for index, layer in enumerate(walk_layers(packet)):
         names = {layer.name.lower(), type(layer).__name__.lower()}
         if layer_name and layer_name.lower() not in names:
             continue
         if field_name in [f.name for f in layer.fields_desc]:
-            target = layer
+            target, target_index = layer, index
             break
     if target is None:
         raise ValueError(f"no layer with a field called {name!r}")
@@ -340,7 +349,7 @@ def set_field(data: bytes, linktype: int, spec: str) -> bytes:
     except ValueError:
         value = value_text.strip("'\"")
     setattr(target, field_name, value)
-    return fix_bytes(raw(packet), linktype, keep=(target, field_name))
+    return fix_bytes(raw(packet), linktype, keep=(target_index, field_name))
 
 
 def filter_indices(datas, linktype, expr):
@@ -512,34 +521,33 @@ def anonymise(datas, linktype):
     return results
 
 
+def carry_at(values, index, default):
+    """Per-packet value at `index`, carrying the last known one forward."""
+    if index < len(values):
+        return values[index]
+    return values[-1] if values else default
+
+
 def time_at(times, index) -> str:
     """Timestamp for a packet, carrying the last known value forward."""
-    if index < len(times):
-        return times[index]
-    return times[-1] if times else "0"
+    return carry_at(times, index, "0")
 
 
-def wirelen_at(wirelens, index, data_len, trust=False) -> int:
-    """Wire length for a packet; falls back to the captured length.
+def annotate(datas, linktype, limit, times, wirelens, caplens=None):
+    """Build the meta structure for a list of packet byte strings.
 
-    A stored wire length larger than the data is only honoured when `trust`
-    is set (i.e. it came straight from a capture file and the packet was
-    genuinely wire-truncated). On the edit path the current byte count is
-    authoritative, so shortening a packet no longer leaves it looking
-    wire-truncated.
+    Each entry records the original wire length ('wl') and captured length
+    ('cl') verbatim, so a later save can tell an edited packet (its byte count
+    no longer matches 'cl') from a genuinely wire-truncated one and preserve
+    the latter's wire length without faking truncation on the former.
     """
-    if trust and index < len(wirelens) and data_len <= wirelens[index]:
-        return wirelens[index]
-    return data_len
-
-
-def annotate(datas, linktype, limit, times, wirelens, trust_wirelens=False):
-    """Build the meta structure for a list of packet byte strings."""
+    caplens = caplens or []
     entries = []
     for index, data in enumerate(datas):
         entry = {
             "t": time_at(times, index),
-            "wl": wirelen_at(wirelens, index, len(data), trust=trust_wirelens),
+            "wl": carry_at(wirelens, index, len(data)),
+            "cl": carry_at(caplens, index, len(data)),
         }
         if index < limit and HAS_SCAPY:
             packet = dissect(data, linktype)
@@ -567,12 +575,14 @@ def write_meta(path, meta) -> None:
     Path(path).write_text(json.dumps(meta, separators=(",", ":")), encoding="utf-8")
 
 
-def carried_times_and_wirelens(meta):
-    """Extract per-packet timestamps and wire lengths from an old meta file."""
+def carried_meta(meta):
+    """Per-packet timestamps, wire lengths and captured lengths from a meta."""
     if not meta:
-        return [], []
+        return [], [], []
     packets = meta.get("packets", [])
-    return [p.get("t", "0") for p in packets], [p.get("wl", 0) for p in packets]
+    return ([p.get("t", "0") for p in packets],
+            [p.get("wl", 0) for p in packets],
+            [p.get("cl", p.get("wl", 0)) for p in packets])
 
 
 def cmd_load(args) -> None:
@@ -596,7 +606,8 @@ def cmd_load(args) -> None:
     except Exception as error:
         fail(f"could not read {args.path}: {error}")
 
-    meta = annotate(datas, linktype, args.limit, times, wirelens, trust_wirelens=True)
+    meta = annotate(datas, linktype, args.limit, times, wirelens,
+                    [len(d) for d in datas])
     write_meta(args.meta, meta)
     sys.stdout.write("\n".join(data.hex(" ") for data in datas))
     if datas:
@@ -608,7 +619,7 @@ def cmd_save(args) -> None:
     datas = parse_hex_lines(sys.stdin)
     old_meta = read_meta(args.meta) if args.meta else None
     linktype = (old_meta or {}).get("linktype", args.linktype)
-    times, wirelens = carried_times_and_wirelens(old_meta)
+    times, wirelens, caplens = carried_meta(old_meta)
 
     if Path(args.path).suffix.lower() in {".pcapng", ".ntar"}:
         warn("saved in classic pcap format (pcapng writing is not supported)")
@@ -620,20 +631,23 @@ def cmd_save(args) -> None:
             writer.write_header(None)
             for index, data in enumerate(datas):
                 seconds, microseconds, wirelen = packet_record(
-                    times, wirelens, index, data)
+                    times, wirelens, caplens, index, data)
                 writer.write_packet(data, sec=seconds, usec=microseconds,
                                     wirelen=wirelen)
             writer.close()
         else:
             native_write(temp_path, linktype, (
-                (data,) + packet_record(times, wirelens, index, data)
+                (data,) + packet_record(times, wirelens, caplens, index, data)
                 for index, data in enumerate(datas)))
         Path(temp_path).replace(args.path)
     except OSError as error:
         fail(f"could not write {args.path}: {error}")
 
     if args.meta:
-        write_meta(args.meta, annotate(datas, linktype, args.limit, times, wirelens))
+        # After writing, every packet's on-disk captured length is its current
+        # byte count; preserve the (possibly larger) wire lengths.
+        write_meta(args.meta, annotate(datas, linktype, args.limit, times,
+                                       wirelens, [len(d) for d in datas]))
     print(f"{len(datas)} packets")
 
 
@@ -642,8 +656,9 @@ def cmd_annotate(args) -> None:
     datas = parse_hex_lines(sys.stdin)
     old_meta = read_meta(args.meta)
     linktype = (old_meta or {}).get("linktype", args.linktype)
-    times, wirelens = carried_times_and_wirelens(old_meta)
-    write_meta(args.meta, annotate(datas, linktype, args.limit, times, wirelens))
+    times, wirelens, caplens = carried_meta(old_meta)
+    write_meta(args.meta, annotate(datas, linktype, args.limit, times, wirelens,
+                                   caplens))
 
 
 def cmd_ascii(args) -> None:
@@ -687,12 +702,14 @@ def handle_request(request: dict) -> dict:
     if operation == "packet":
         meta = annotate([single()], linktype, 1,
                         [str(request.get("t", "0"))],
-                        [int(request.get("wl", 0))])
+                        [int(request.get("wl", 0))],
+                        [int(request.get("cl", 0))])
         return {"packet": meta["packets"][0]}
     if operation == "annotate":
         return annotate(packets_in(), linktype, limit,
                         [str(t) for t in request.get("times", [])],
-                        [int(w) for w in request.get("wirelens", [])])
+                        [int(w) for w in request.get("wirelens", [])],
+                        [int(c) for c in request.get("caplens", [])])
     if operation == "show":
         packet = dissect(single(), linktype, request.get("proto") or None)
         dump = packet.summary() + "\n" + packet.show(dump=True)

@@ -132,6 +132,42 @@ print(("ok   " if ttl_ok else "FAIL ") + f"edited ttl persisted (ttl={packets[0]
 print(("ok   " if time_ok else "FAIL ") + f"timestamp preserved ({packets[0].time})")
 PYEOF
 
+# :VimcapSet on a checksum/length field keeps the value (fix_bytes 'keep').
+"$python" - >> "$work/all.txt" <<PYEOF
+import json, subprocess, sys
+d = subprocess.Popen(["$python", "$root/python/vimcap.py", "serve"],
+                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+tcp = ("aa bb cc dd ee 02 aa bb cc dd ee 01 08 00 45 00 00 38 00 01 00 00 40 "
+       "06 66 bd 0a 00 00 01 0a 00 00 02 04 d2 00 50 00 00 00 00 00 00 00 00 "
+       "50 02 20 00 a5 17 00 00")
+d.stdin.write(json.dumps({"op": "setfield", "hex": tcp, "spec": "IP.len=100",
+                          "linktype": 1}) + "\n")
+d.stdin.flush()
+hexb = json.loads(d.stdout.readline())["hex"].split()
+ln = int(hexb[16], 16) * 256 + int(hexb[17], 16)
+print(("ok   " if ln == 100 else "FAIL ") + f"VimcapSet keeps a hand-set length field (len={ln})")
+d.stdin.close(); d.terminate()
+PYEOF
+
+# A wire-truncated capture (caplen < origlen) round-trips byte-identically
+# when unedited (the original wire length is preserved).
+"$python" - "$work/trunc.pcap" <<'PYEOF'
+import struct, sys
+hdr = struct.pack("<IHHIIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, 1)
+data = bytes(range(10))
+rec = struct.pack("<IIII", 1700000000, 0, len(data), 60) + data  # caplen 10, wire 60
+open(sys.argv[1], "wb").write(hdr + rec)
+PYEOF
+"$python" "$root/python/vimcap.py" load "$work/trunc.pcap" --meta "$work/tr.json" \
+  > "$work/tr.hex" 2>/dev/null
+"$python" "$root/python/vimcap.py" save "$work/trunc_rt.pcap" --meta "$work/tr.json" \
+  < "$work/tr.hex" >/dev/null 2>&1
+if cmp -s "$work/trunc.pcap" "$work/trunc_rt.pcap"; then
+  echo "ok   wire-truncated capture round-trips byte-identically unedited" >> "$work/all.txt"
+else
+  echo "FAIL wire-truncated capture loses its wire length on save" >> "$work/all.txt"
+fi
+
 # The pure-Python path (no scapy) must still round-trip byte-identically.
 # Only runs when an interpreter without scapy is available.
 noscapy=""
