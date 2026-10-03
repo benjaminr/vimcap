@@ -186,6 +186,11 @@ function! vimcap#load(path) abort
         \ && bufwinid(bufnr('vimcap://help')) < 0
     call vimcap#welcome()
   endif
+
+  " Prime the cursor-byte highlight and pane sync for the initial position.
+  if line('$') > 0 && !empty(getline(1))
+    call vimcap#track_cursor()
+  endif
 endfunction
 
 " Open the configured panes (and, if enabled, the agent) for the current
@@ -262,7 +267,13 @@ endfunction
 function! vimcap#init() abort
   setlocal filetype=vimcap
   setlocal number nowrap nostartofline noswapfile
-  setlocal cursorline cursorcolumn
+  " 'cursorline' is cheap; 'cursorcolumn' forces a full-window redraw on every
+  " horizontal move (laggy on large captures), so it is opt-in. The byte under
+  " the cursor is already highlighted by the VimcapCursorByte match.
+  setlocal cursorline
+  if get(g:, 'vimcap_cursorcolumn', 0)
+    setlocal cursorcolumn
+  endif
   setlocal formatoptions-=t
   " Hex digits form a 'word' so \k motions and the cursor-byte match work.
   setlocal iskeyword=48-57,65-70,97-102
@@ -324,21 +335,22 @@ function! vimcap#init() abort
     nnoremap <buffer> <silent> b :call vimcap#field_jump(-1)<CR>
   endif
 
-  call s:ensure_cursor_match()
   augroup vimcap_buffer
     autocmd! * <buffer>
-    autocmd BufWinEnter,WinEnter <buffer> call s:ensure_cursor_match()
     autocmd TextChanged,TextChangedI <buffer> call vimcap#live#on_change()
     autocmd CursorMoved <buffer> call vimcap#track_cursor()
   augroup END
   call vimcap#live#warm()
 endfunction
 
-" Highlight both hex digits of the byte under the cursor, per window.
-function! s:ensure_cursor_match() abort
-  if !exists('w:vimcap_cursor_match')
-    let w:vimcap_cursor_match = matchadd('VimcapCursorByte', '\k*\%#\k*')
+" Highlight the two hex digits of the byte under the cursor in the hex window.
+" Driven from do_track with an explicit position (not a \%# pattern, which
+" would force a full-window redraw on every cursor move).
+function! s:highlight_cursor_byte(lnum, byte) abort
+  if exists('w:vimcap_cursor_match')
+    silent! call matchdelete(w:vimcap_cursor_match)
   endif
+  let w:vimcap_cursor_match = matchaddpos('VimcapCursorByte', [[a:lnum, a:byte * 3 + 1, 2]])
 endfunction
 
 " ---------------------------------------------------------------------------
@@ -1088,7 +1100,7 @@ function! s:pane(name, lines, bind) abort
   call setline(1, a:lines)
   setlocal nomodifiable nowrap
   if a:bind ==# 'cursor'
-    setlocal cursorbind scrollbind cursorline cursorcolumn
+    setlocal cursorbind scrollbind cursorline
   elseif a:bind ==# 'scroll'
     setlocal scrollbind cursorline
   endif
@@ -1299,6 +1311,8 @@ function! s:detail_lines(bufnr, lnum, proto) abort
   " Prefer the rich, offset-annotated view; it needs no subprocess and works
   " without the live daemon. A specific --proto forces scapy's own show().
   let s:detail_packet_lnum = a:lnum
+  " The field rows just changed, so invalidate the highlight-row cache.
+  let s:detail_field_line = -1
   if empty(a:proto)
     let [lines, fieldmap] = s:detail_from_meta(a:bufnr, a:lnum)
     if !empty(lines)
@@ -1359,6 +1373,12 @@ function! s:detail_highlight_field() abort
       break
     endif
   endfor
+  " Skip the win_execute (and detail-pane redraw) when the highlighted field
+  " row has not changed — i.e. the cursor is still within the same field.
+  if target == get(s:, 'detail_field_line', -1)
+    return
+  endif
+  let s:detail_field_line = target
   call win_execute(winid, [
         \ 'if exists("w:vimcap_field_match") | silent! call matchdelete(w:vimcap_field_match) | endif',
         \ 'let w:vimcap_field_match = ' . (target > 0
@@ -1534,6 +1554,7 @@ function! s:do_track() abort
   let lnum = line('.')
   let byte = s:cursor_byte()
   let s:last_track = [lnum, byte]
+  call s:highlight_cursor_byte(lnum, byte)
   for [name, spec] in items(s:byte_panes)
     call s:track_pane('vimcap://' . name, lnum, byte * spec.cols, spec.matchlen)
   endfor
