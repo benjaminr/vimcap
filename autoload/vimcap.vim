@@ -1126,29 +1126,26 @@ function! s:sync_pane(name, lines) abort
   call setbufvar(pane, '&modifiable', 0)
 endfunction
 
-function! s:ascii_line(hexline) abort
-  let chars = []
-  for pair in split(a:hexline)
-    let code = str2nr(pair, 16)
-    call add(chars, (code >= 32 && code < 127) ? nr2char(code) : '.')
+" Precompute each byte value's rendering once, so building a line is just a
+" table lookup per byte rather than a per-bit loop.
+let s:ascii_glyph = []
+let s:bits_glyph = []
+for s:b in range(256)
+  call add(s:ascii_glyph, (s:b >= 32 && s:b < 127) ? nr2char(s:b) : '.')
+  let s:g = ''
+  for s:w in [128, 64, 32, 16, 8, 4, 2, 1]
+    let s:g .= and(s:b, s:w) ? '█' : '·'
   endfor
-  return join(chars, '  ')
+  call add(s:bits_glyph, s:g)
+endfor
+unlet s:b s:w s:g
+
+function! s:ascii_line(hexline) abort
+  return join(map(split(a:hexline), 's:ascii_glyph[str2nr(v:val, 16)]'), '  ')
 endfunction
 
-" One byte becomes eight block glyphs, most significant bit first.
-let s:bit_weights = [128, 64, 32, 16, 8, 4, 2, 1]
-
 function! s:bits_line(hexline) abort
-  let groups = []
-  for pair in split(a:hexline)
-    let value = str2nr(pair, 16)
-    let bits = ''
-    for weight in s:bit_weights
-      let bits .= and(value, weight) ? '█' : '·'
-    endfor
-    call add(groups, bits)
-  endfor
-  return join(groups, ' ')
+  return join(map(split(a:hexline), 's:bits_glyph[str2nr(v:val, 16)]'), ' ')
 endfunction
 
 " Byte-aligned panes rendered from the hex bytes. Each knows its per-line
@@ -1190,8 +1187,46 @@ function! vimcap#bits_pane() abort
   endif
 endfunction
 
+" Rebuild only the given 1-based lines in the open byte/summary panes. Used on
+" live edits so a one-line change costs one line of work, not a full rebuild.
+function! vimcap#update_pane_lines(bufnr, lines) abort
+  if empty(a:lines)
+    return
+  endif
+  for [name, spec] in items(s:byte_panes)
+    let pane = bufnr('vimcap://' . name)
+    if bufwinid(pane) < 0
+      continue
+    endif
+    call setbufvar(pane, '&modifiable', 1)
+    for lnum in a:lines
+      call setbufline(pane, lnum, spec.line(get(getbufline(a:bufnr, lnum), 0, '')))
+    endfor
+    call setbufvar(pane, '&modifiable', 0)
+  endfor
+  let summary = bufnr('vimcap://summary')
+  if bufwinid(summary) >= 0
+    let packets = s:packets(a:bufnr)
+    call setbufvar(summary, '&modifiable', 1)
+    for lnum in a:lines
+      if lnum <= len(packets)
+        call setbufline(summary, lnum,
+              \ printf('%4d  %s', lnum, get(packets[lnum - 1], 's', '')))
+      endif
+    endfor
+    call setbufvar(summary, '&modifiable', 0)
+  endif
+  " The detail pane shows one packet; refresh it only if that packet changed.
+  let hexwin = bufwinid(a:bufnr)
+  if hexwin > 0 && bufwinid(bufnr('vimcap://detail')) > 0
+        \ && index(a:lines, line('.', hexwin)) >= 0
+    call s:sync_pane('vimcap://detail', s:detail_lines(a:bufnr,
+          \ line('.', hexwin), getbufvar(a:bufnr, 'vimcap_detail_proto', '')))
+  endif
+endfunction
+
 " Bring every open pane in line with the buffer's current bytes and
-" annotations. Called after live updates and :VimcapRefresh. Lines are only
+" annotations. Called after structural edits and :VimcapRefresh. Lines are only
 " built for panes that are actually open, so closed panes cost nothing.
 function! vimcap#update_panes(bufnr) abort
   for [name, spec] in items(s:byte_panes)
@@ -1486,34 +1521,45 @@ function! vimcap#detail_toggle() abort
   endif
 endfunction
 
-" Keep every open view pointed at the byte under the cursor: byte-aligned
-" panes at their own columns-per-byte from s:byte_panes, while the summary
-" and UTF-8 panes follow the packet line.
-function! vimcap#track_cursor() abort
+" Cursor sync is kept loop-free without locks or timers: s:last_track records
+" the [line, byte] the views were last synced to. Both handlers no-op when the
+" cursor is already there, so the programmatic moves they make (which re-fire
+" CursorMoved) converge immediately instead of cascading.
+let s:linked_panes = {'ascii': 1, 'bits': 1, 'utf8': 1, 'summary': 1, 'detail': 1}
+
+" Point every open view at the byte under the hex cursor: byte-aligned panes
+" at their own columns-per-byte, summary/UTF-8 at the packet line, detail at
+" the field.
+function! s:do_track() abort
   let lnum = line('.')
   let byte = s:cursor_byte()
+  let s:last_track = [lnum, byte]
   for [name, spec] in items(s:byte_panes)
     call s:track_pane('vimcap://' . name, lnum, byte * spec.cols, spec.matchlen)
   endfor
   call s:track_pane('vimcap://summary', lnum, -1, 0)
   call s:track_pane('vimcap://utf8', lnum, -1, 0)
   call vimcap#detail_follow()
-  " Re-emphasise the detail field as the byte moves within the same packet
-  " (detail_follow only rebuilds when the packet changes).
   call s:detail_highlight_field()
 endfunction
 
-" Reverse link: a cursor move inside a byte/packet-aligned pane drives the hex
-" view (and thus every other pane). s:sync_lock stops the cascade — track_cursor
-" moving this pane's cursor must not re-enter here.
-let s:linked_panes = {'ascii': 1, 'bits': 1, 'utf8': 1, 'summary': 1, 'detail': 1}
-
-function! vimcap#pane_cursor_moved(name) abort
-  if get(s:, 'sync_lock', 0) || !has_key(s:linked_panes, a:name)
+" Hex CursorMoved handler.
+function! vimcap#track_cursor() abort
+  if [line('.'), s:cursor_byte()] == get(s:, 'last_track', [])
     return
   endif
-  let hexwin = bufwinid(s:find_hex_buf())
-  if hexwin <= 0
+  call s:do_track()
+endfunction
+
+" Internal: run the pane-tracking worker in the hex window's context.
+function! vimcap#_do_track() abort
+  call s:do_track()
+endfunction
+
+" Reverse link: a cursor move inside a byte/packet-aligned pane drives the hex
+" view (and thus every other pane) back to the matching byte/packet.
+function! vimcap#pane_cursor_moved(name) abort
+  if !has_key(s:linked_panes, a:name)
     return
   endif
   let hexline = line('.')
@@ -1532,14 +1578,16 @@ function! vimcap#pane_cursor_moved(name) abort
     endfor
   endif
   " summary / utf8: one line per packet, so the line maps straight across.
-  let s:sync_lock = 1
-  call win_execute(hexwin, 'call cursor(' . hexline . ', ' . (byte * 3 + 1)
-        \ . ') | call vimcap#track_cursor()')
-  call timer_start(0, function('s:sync_unlock'))
-endfunction
-
-function! s:sync_unlock(timer) abort
-  let s:sync_lock = 0
+  " No-op when the hex is already here — this move came from our own tracking.
+  if [hexline, byte] == get(s:, 'last_track', [])
+    return
+  endif
+  let hexwin = bufwinid(s:find_hex_buf())
+  if hexwin <= 0
+    return
+  endif
+  call win_execute(hexwin,
+        \ 'call cursor(' . hexline . ', ' . (byte * 3 + 1) . ') | call vimcap#_do_track()')
 endfunction
 
 " Move a pane's cursor to the packet line and, when chars >= 0, to that

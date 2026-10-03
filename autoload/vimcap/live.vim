@@ -73,8 +73,10 @@ function! vimcap#live#flush(bufnr) abort
   let linktype = vimcap#linktype(a:bufnr)
   let packets = get(meta, 'packets', [])
 
+  let changed = []
   if len(current) == len(cached) && len(current) == len(packets)
-    let updated = s:update_changed_lines(a:bufnr, current, cached, packets, linktype, limit)
+    let result = s:update_changed_lines(a:bufnr, current, cached, packets, linktype, limit)
+    let [updated, changed] = [result.ok, result.lines]
   elseif len(current) <= limit
     let updated = s:update_all_lines(a:bufnr, meta, current, linktype, limit)
   else
@@ -87,7 +89,12 @@ function! vimcap#live#flush(bufnr) abort
     if updated
       call s:mark_fresh(a:bufnr, current)
     endif
-    call vimcap#update_panes(a:bufnr)
+    " In-place edits refresh only their own lines; structural edits rebuild.
+    if !empty(changed)
+      call vimcap#update_pane_lines(a:bufnr, changed)
+    else
+      call vimcap#update_panes(a:bufnr)
+    endif
   endif
 endfunction
 
@@ -119,14 +126,17 @@ function! s:mark_fresh(bufnr, lines) abort
   redrawstatus
 endfunction
 
-" Same packet count: re-dissect only the edited lines. Returns 1 when every
-" changed line was annotated successfully.
+" Same packet count: re-dissect only the edited lines. Returns {ok, lines}
+" where lines are the 1-based line numbers that changed (for incremental pane
+" refresh) and ok is false if any changed line failed to dissect.
 function! s:update_changed_lines(bufnr, current, cached, packets, linktype, limit) abort
   let all_updated = 1
+  let changed = []
   for index in range(len(a:current))
     if a:current[index] ==# a:cached[index] || index >= a:limit
       continue
     endif
+    call add(changed, index + 1)
     let entry = a:packets[index]
     let response = s:request({
           \ 'op': 'packet',
@@ -141,7 +151,7 @@ function! s:update_changed_lines(bufnr, current, cached, packets, linktype, limi
       let all_updated = 0
     endif
   endfor
-  return all_updated
+  return {'ok': all_updated, 'lines': changed}
 endfunction
 
 " Packets were added or removed: re-annotate everything, and keep the sidecar
