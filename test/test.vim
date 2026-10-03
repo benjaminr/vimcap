@@ -298,6 +298,17 @@ call s:check(get(b:vimcap.packets[0], 't', '') !=# s:deleted_time,
 let s:send_msg = substitute(execute('VimcapSend'), '[[:cntrl:]]', ' ', 'g')
 call s:check(s:send_msg =~# 'disabled', 'sending is disabled by default')
 
+" --- zoom (maximise / restore) -----------------------------------------------
+call vimcap#ascii_pane()
+call vimcap#bits_pane()
+call vimcap#detail()
+call s:check(winnr('$') > 1, 'workspace has multiple windows before zoom')
+call vimcap#zoom()
+call s:check(winnr('$') == 1, 'zoom maximises to a single window')
+call vimcap#zoom()
+call s:check(winnr('$') > 1 && &filetype ==# 'vimcap',
+      \ 'zoom again restores the workspace from the hex buffer')
+
 " --- close all panes ---------------------------------------------------------
 call vimcap#ascii_pane()
 call vimcap#bits_pane()

@@ -284,6 +284,7 @@ function! vimcap#init() abort
   command! -buffer -nargs=?       VimcapDetail   call vimcap#detail(<q-args>)
   command! -buffer                VimcapRefresh  call vimcap#refresh()
   command! -buffer                VimcapClose    call vimcap#close_panes()
+  command! -buffer                VimcapZoom     call vimcap#zoom()
   command! -buffer -nargs=1       VimcapGoto     call vimcap#goto_offset(<q-args>)
   command! -buffer -range         VimcapValue    call vimcap#value()
   command! -buffer -range=%       VimcapFix      call vimcap#fix(<line1>, <line2>)
@@ -308,6 +309,8 @@ function! vimcap#init() abort
   nnoremap <buffer> <silent> >s :VimcapSummary<CR>
   nnoremap <buffer> <silent> >q :VimcapClose<CR>
   nnoremap <buffer> <silent> >? :call vimcap#welcome_toggle()<CR>
+  nnoremap <buffer> <silent> >z :call vimcap#zoom()<CR>
+  nnoremap <buffer> <silent> <Tab> :call vimcap#zoom()<CR>
   " Single-key close too: >q can lag behind Vim's '>' indent operator.
   nnoremap <buffer> <silent> Q  :VimcapClose<CR>
   nnoremap <buffer> <silent> >f :call vimcap#set_prompt()<CR>
@@ -1058,8 +1061,10 @@ function! s:open_pane_window(name, existing, hex_win) abort
   if a:existing < 0
     setlocal buftype=nofile bufhidden=wipe noswapfile
     silent! execute 'file ' . fnameescape(a:name)
-    " q dismisses the whole workspace from within any pane.
+    " q dismisses the whole workspace from within any pane; Tab maximises /
+    " restores the focused pane.
     nnoremap <buffer> <silent> q :call vimcap#close_panes()<CR>
+    nnoremap <buffer> <silent> <Tab> :call vimcap#zoom()<CR>
   endif
   setlocal nonumber
 endfunction
@@ -1399,6 +1404,44 @@ function! vimcap#close_panes() abort
     let closed += 1
   endif
   echo closed > 0 ? 'panes closed' : 'no panes open'
+endfunction
+
+" The capture (hex) buffer for the current layout: the window on screen whose
+" buffer is a vimcap capture (not a vimcap:// pane).
+function! s:find_hex_buf() abort
+  if &filetype ==# 'vimcap' && bufname('%') !~# '^vimcap://'
+    return bufnr('%')
+  endif
+  for nr in range(1, winnr('$'))
+    let buf = winbufnr(nr)
+    if getbufvar(buf, '&filetype') ==# 'vimcap' && bufname(buf) !~# '^vimcap://'
+      return buf
+    endif
+  endfor
+  return bufnr('%')
+endfunction
+
+" Maximise the focused window (hex or any pane), or restore the full layout.
+" Zoom just closes the other windows; restore reopens the workspace. 'hidden'
+" is set over the window changes so an unsaved hex buffer is never abandoned.
+function! vimcap#zoom() abort
+  if get(t:, 'vimcap_zoom', 0)
+    let hex = t:vimcap_zoom
+    let t:vimcap_zoom = 0
+    let save_hidden = &hidden
+    set hidden
+    if bufexists(hex) && bufnr('%') != hex
+      execute 'buffer' hex
+    endif
+    let &hidden = save_hidden
+    call vimcap#open_workspace()
+  elseif winnr('$') > 1
+    let t:vimcap_zoom = s:find_hex_buf()
+    let save_hidden = &hidden
+    set hidden
+    only
+    let &hidden = save_hidden
+  endif
 endfunction
 
 " K: show the dissection pane, or put it away if it is already showing.

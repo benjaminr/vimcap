@@ -130,6 +130,12 @@ dissection tree re-renders for it. The mouse can scroll and focus any pane
                         leaving just the hex window. From the hex window press
                         Q (or >q); from inside any pane press q.
 
+                                                                *:VimcapZoom*
+:VimcapZoom             Maximise the focused window (the hex view or any pane)
+                        to fill the screen; run again to restore the full
+                        layout. Press <Tab> in any vimcap window to toggle it
+                        (also >z from the hex window).
+
                                                                  *:VimcapHelp*
 :VimcapHelp             Toggle the welcome splash: the vimcap logo and a quick
                         command reference. It opens with every capture while
@@ -270,6 +276,8 @@ Normal mode (buffer-local):
     >q / Q          close all panes (|:VimcapClose|)                *vimcap->q*
                     (Q is a single key; >q can lag behind the '>' operator)
     q (in a pane)   close all panes from within any pane
+    <Tab>           maximise / restore the focused window (|:VimcapZoom|)
+    >z              maximise / restore (from the hex window)         *vimcap->z*
     >?              toggle the welcome splash (|:VimcapHelp|)        *vimcap->?*
 
 Visual mode:
