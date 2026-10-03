@@ -997,14 +997,23 @@ function! s:pane_region(buffer) abort
         \ get(s:default_region, name, 'bottom'))
 endfunction
 
-function! s:pane_cross_size(buffer, region) abort
-  let override = get(get(g:, 'vimcap_pane_size', {}), s:pane_name(a:buffer), 0)
+" Width of the right-hand column (the column is shared, so this is per-column).
+function! s:pane_width() abort
+  return min([get(g:, 'vimcap_pane_width', 64), &columns / 2])
+endfunction
+
+" Height of a pane that is stacked (below the hex, or within a column). A
+" per-pane g:vimcap_pane_size wins; the welcome splash defaults to its content
+" height so it sits as a compact strip rather than taking half the column.
+function! s:pane_height(name) abort
+  let override = get(get(g:, 'vimcap_pane_size', {}), s:pane_name(a:name), 0)
   if override > 0
     return override
   endif
-  return a:region ==# 'right'
-        \ ? min([get(g:, 'vimcap_pane_width', 64), &columns / 2])
-        \ : min([get(g:, 'vimcap_pane_height', 10), &lines / 2])
+  if s:pane_name(a:name) ==# 'help'
+    return min([len(s:welcome_lines()), &lines / 2])
+  endif
+  return min([get(g:, 'vimcap_pane_height', 10), &lines / 2])
 endfunction
 
 " An open pane window in the same region, to stack the new pane beneath.
@@ -1022,18 +1031,19 @@ endfunction
 " hex_win anchors 'bottom' panes so they stay under the hex, not full width.
 function! s:open_pane_window(name, existing, hex_win) abort
   let region = s:pane_region(a:name)
-  let size = s:pane_cross_size(a:name, region)
   let neighbour = s:region_window(region)
   let open = a:existing > 0 ? ('sbuffer ' . a:existing) : 'new'
 
   if neighbour > 0
-    " Stack beneath the region's existing pane.
+    " Stack within the region. The welcome splash sits above its neighbour as
+    " a compact strip; everything else stacks beneath. Stacked panes are sized
+    " by height (the column width is already fixed by the first pane).
     call win_gotoid(neighbour)
-    execute 'belowright ' . open
-    execute 'resize' size
+    execute (s:pane_name(a:name) ==# 'help' ? 'aboveleft ' : 'belowright ') . open
+    execute 'resize' s:pane_height(a:name)
   elseif region ==# 'right'
     execute 'botright vertical ' . open
-    execute 'vertical resize' size
+    execute 'vertical resize' s:pane_width()
     setlocal winfixwidth
   else
     " First bottom pane: split the hex window so it sits under it.
@@ -1041,7 +1051,7 @@ function! s:open_pane_window(name, existing, hex_win) abort
       call win_gotoid(a:hex_win)
     endif
     execute 'belowright ' . open
-    execute 'resize' size
+    execute 'resize' s:pane_height(a:name)
     setlocal winfixheight
   endif
 
