@@ -23,6 +23,8 @@ call s:check(bufwinid(bufnr('vimcap://detail')) > 0
       \ && bufwinid(bufnr('vimcap://ascii')) > 0
       \ && bufwinid(bufnr('vimcap://bits')) > 0,
       \ 'detail, ascii and bits panes open automatically on load')
+call s:check(bufwinid(bufnr('vimcap://help')) > 0,
+      \ 'welcome pane opens when a pcap is opened')
 call s:check(&mouse ==# 'a', 'mouse support enabled for pane scrolling')
 
 " --- field inspection ----------------------------------------------------

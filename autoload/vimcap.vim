@@ -196,11 +196,6 @@ function! vimcap#open_workspace() abort
   if line('$') <= 0 || empty(getline(1))
     return
   endif
-  " Content has arrived: the welcome splash has served its purpose.
-  let help = bufwinid(bufnr('vimcap://help'))
-  if help > 0
-    call win_execute(help, 'close')
-  endif
   for pane in vimcap#auto_panes()
     if bufwinid(bufnr('vimcap://' . pane)) <= 0
       call s:open_named_pane(pane)
@@ -963,10 +958,20 @@ let s:default_region = {
       \ 'ascii': 'bottom', 'bits': 'bottom', 'utf8': 'bottom'}
 
 " Panes to open automatically on load, in order. g:vimcap_panes is the
-" current name; g:vimcap_auto_panes is kept as an alias.
+" current name; g:vimcap_auto_panes is kept as an alias. When neither is set,
+" the welcome splash joins the defaults unless g:vimcap_welcome is off.
 function! vimcap#auto_panes() abort
-  return get(g:, 'vimcap_panes',
-        \ get(g:, 'vimcap_auto_panes', ['detail', 'ascii', 'bits']))
+  if exists('g:vimcap_panes')
+    return g:vimcap_panes
+  endif
+  if exists('g:vimcap_auto_panes')
+    return g:vimcap_auto_panes
+  endif
+  let panes = ['detail', 'ascii', 'bits']
+  if get(g:, 'vimcap_welcome', 1)
+    call add(panes, 'help')
+  endif
+  return panes
 endfunction
 
 " Builder for each pane by short name (all callable with no arguments).

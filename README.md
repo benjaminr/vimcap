@@ -28,8 +28,8 @@ edit like any other text — except vimcap knows what the bytes *mean*:
 Ordinary Vim editing does the rest: `r` rewrites a nibble, `R` overtypes a
 run of bytes, `dd` drops a packet, `yy`/`p` replays one.
 
-New to it? Open an empty `vim capture.pcap` and you get a welcome splash with
-the logo and a command cheatsheet (`:VimcapHelp` or `>?` toggles it anytime).
+New to it? Opening a capture shows a welcome splash with the logo and a command
+cheatsheet (`:VimcapHelp` or `>?` toggles it; `g:vimcap_welcome = 0` to opt out).
 
 And because scapy is already warm in the helper daemon, the whole toolbox
 comes along:

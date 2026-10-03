@@ -132,9 +132,8 @@ dissection tree re-renders for it. The mouse can scroll and focus any pane
 
                                                                  *:VimcapHelp*
 :VimcapHelp             Toggle the welcome splash: the vimcap logo and a quick
-                        command reference. It opens on its own when you start
-                        an empty session (|g:vimcap_welcome|) and closes once
-                        packets arrive. Also on |>?|.
+                        command reference. It opens with every capture while
+                        |g:vimcap_welcome| is on. Also on |>?|.
 
                                                                 *:VimcapTheme*
 :VimcapTheme [name]     Switch the colour theme live (|g:vimcap_theme|), with
@@ -392,9 +391,10 @@ g:vimcap_agent_height                                  *g:vimcap_agent_height*
     Default: 15
 
 g:vimcap_welcome                                            *g:vimcap_welcome*
-    Show the welcome splash (logo + command reference) automatically when a
-    session opens with no packets. Toggle it anytime with |:VimcapHelp|.
-    Default: 1
+    Show the welcome splash (logo + command reference) when a capture opens.
+    While on, it joins the default panes (|g:vimcap_panes|) and also appears
+    on an empty session. Toggle it anytime with |:VimcapHelp|. Set an explicit
+    |g:vimcap_panes| to control its placement/order. Default: 1
 
 g:vimcap_theme                                                *g:vimcap_theme*
     Colour theme, applied across every pane so the panes read as a set (an
