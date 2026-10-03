@@ -296,6 +296,20 @@ call s:check(get(b:vimcap.packets[0], 't', '') !=# s:deleted_time,
 let s:send_msg = substitute(execute('VimcapSend'), '[[:cntrl:]]', ' ', 'g')
 call s:check(s:send_msg =~# 'disabled', 'sending is disabled by default')
 
+" --- close all panes ---------------------------------------------------------
+call vimcap#ascii_pane()
+call vimcap#bits_pane()
+call vimcap#summary_pane('')
+call vimcap#detail()
+call s:check(bufwinid(bufnr('vimcap://detail')) > 0, 'panes open before close')
+call vimcap#close_panes()
+call s:check(bufwinid(bufnr('vimcap://detail')) < 0
+      \ && bufwinid(bufnr('vimcap://ascii')) < 0
+      \ && bufwinid(bufnr('vimcap://bits')) < 0
+      \ && bufwinid(bufnr('vimcap://summary')) < 0,
+      \ ':VimcapClose closes every pane')
+call s:check(exists(':VimcapClose') == 2, ':VimcapClose command is available')
+
 " --- empty session + sniff lays out the workspace ----------------------------
 " A new (non-existent) capture must become a vimcap buffer so commands work,
 " and populating it (as a sniff does) must open the configured panes.

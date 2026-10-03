@@ -125,6 +125,10 @@ dissection tree re-renders for it. The mouse can scroll and focus any pane
 :VimcapRefresh          Re-dissect the buffer contents to update colours,
                         summaries and field annotations after editing.
 
+                                                               *:VimcapClose*
+:VimcapClose            Close every vimcap pane (and the agent terminal),
+                        leaving just the hex window. Also on |>q|.
+
                                                                *:VimcapHealth*
 :VimcapHealth           Report the environment vimcap depends on: editor
                         features, the Python interpreter and scapy version it
@@ -251,6 +255,7 @@ Normal mode (buffer-local):
     >b              binary pane (|:VimcapBits|)
     >u              UTF-8 pane (|:VimcapUtf8|)
     >s              summary pane (|:VimcapSummary|)
+    >q              close all panes (|:VimcapClose|)                *vimcap->q*
 
 Visual mode:
 

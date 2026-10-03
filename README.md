@@ -117,6 +117,7 @@ vim capture.pcap
 | `>b` / `:VimcapBits` | Binary pane: `█·█·█·█·` per byte, coloured bits     |
 | `>s` / `:VimcapSummary` | One-line scapy summary per packet, scroll-bound  |
 | `>u` / `:VimcapUtf8` | Packets decoded as UTF-8, below the hex             |
+| `>q` / `:VimcapClose`| Close all panes, leaving just the hex              |
 | `K` (visual)         | Interpret selected bytes (hex, ASCII, BE/LE ints)   |
 | `:VimcapGoto 0x14`   | Jump to a byte offset within the packet             |
 | `:VimcapRefresh`     | Re-dissect after editing (also happens on save)     |

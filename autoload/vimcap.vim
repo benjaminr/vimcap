@@ -276,6 +276,7 @@ function! vimcap#init() abort
   command! -buffer -nargs=?       VimcapSummary  call vimcap#summary_pane(<q-args>)
   command! -buffer -nargs=?       VimcapDetail   call vimcap#detail(<q-args>)
   command! -buffer                VimcapRefresh  call vimcap#refresh()
+  command! -buffer                VimcapClose    call vimcap#close_panes()
   command! -buffer -nargs=1       VimcapGoto     call vimcap#goto_offset(<q-args>)
   command! -buffer -range         VimcapValue    call vimcap#value()
   command! -buffer -range=%       VimcapFix      call vimcap#fix(<line1>, <line2>)
@@ -298,6 +299,7 @@ function! vimcap#init() abort
   nnoremap <buffer> <silent> >b :VimcapBits<CR>
   nnoremap <buffer> <silent> >u :VimcapUtf8<CR>
   nnoremap <buffer> <silent> >s :VimcapSummary<CR>
+  nnoremap <buffer> <silent> >q :VimcapClose<CR>
   nnoremap <buffer> <silent> >f :call vimcap#set_prompt()<CR>
   xnoremap <buffer> <silent> K :VimcapValue<CR>
 
@@ -1294,6 +1296,25 @@ function! vimcap#detail(...) abort
         \ s:detail_lines(bufnr('%'), line('.'), b:vimcap_detail_proto), '')
   call s:detail_apply_syntax()
   call s:detail_highlight_field()
+endfunction
+
+" Close every vimcap pane (and the agent terminal), leaving just the hex.
+let s:all_panes = ['detail', 'summary', 'stream', 'stats', 'ascii', 'bits', 'utf8']
+
+function! vimcap#close_panes() abort
+  let closed = 0
+  for name in s:all_panes
+    let winid = bufwinid(bufnr('vimcap://' . name))
+    if winid > 0
+      call win_execute(winid, 'close')
+      let closed += 1
+    endif
+  endfor
+  if exists('*vimcap#agent#active') && vimcap#agent#active()
+    call vimcap#agent#stop()
+    let closed += 1
+  endif
+  echo closed > 0 ? 'panes closed' : 'no panes open'
 endfunction
 
 " K: show the dissection pane, or put it away if it is already showing.
