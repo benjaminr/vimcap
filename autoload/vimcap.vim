@@ -53,6 +53,42 @@ function! vimcap#annotate_limit() abort
   return get(g:, 'vimcap_annotate_limit', 2000)
 endfunction
 
+" ---------------------------------------------------------------------------
+" Shared pane / geometry helpers
+" ---------------------------------------------------------------------------
+
+" The on-screen window id for a pane ('detail', 'ascii', ...), or -1 when the
+" pane is not open. The single place pane windows are resolved by name.
+function! s:pane_winid(name) abort
+  return bufwinid(bufnr('vimcap://' . a:name))
+endfunction
+
+" Hex-view screen column of byte N (three columns per byte: two digits + space).
+function! s:hexcol(byte) abort
+  return a:byte * 3 + 1
+endfunction
+
+" Apply buffer-local syntax once per pane: resolve the window, bail if closed
+" or already done, set the flag, and run the syntax commands there.
+function! s:apply_pane_syntax(name, flag, cmds) abort
+  let winid = s:pane_winid(a:name)
+  if winid <= 0 || getbufvar(bufnr('vimcap://' . a:name), a:flag, 0)
+    return
+  endif
+  call setbufvar(bufnr('vimcap://' . a:name), a:flag, 1)
+  call win_execute(winid, a:cmds)
+endfunction
+
+" Show a pane via Builder, or close it if it is already open (K, >?).
+function! s:toggle_pane(name, Builder) abort
+  let winid = s:pane_winid(a:name)
+  if winid > 0
+    call win_execute(winid, 'close')
+  else
+    call call(a:Builder, [])
+  endif
+endfunction
+
 " Report the environment vimcap depends on, for quick diagnosis.
 function! vimcap#health() abort
   let lines = ['vimcap health', '']
@@ -183,7 +219,7 @@ function! vimcap#load(path) abort
   " An empty session (e.g. a new capture before sniffing) gets the welcome
   " splash — there is nothing else to show, and it says what to do next.
   if get(g:, 'vimcap_welcome', 1) && (line('$') == 0 || empty(getline(1)))
-        \ && bufwinid(bufnr('vimcap://help')) < 0
+        \ && s:pane_winid('help') < 0
     call vimcap#welcome()
   endif
 
@@ -202,7 +238,7 @@ function! vimcap#open_workspace() abort
     return
   endif
   for pane in vimcap#auto_panes()
-    if bufwinid(bufnr('vimcap://' . pane)) <= 0
+    if s:pane_winid(pane) <= 0
       call s:open_named_pane(pane)
     endif
   endfor
@@ -350,7 +386,7 @@ function! s:highlight_cursor_byte(lnum, byte) abort
   if exists('w:vimcap_cursor_match')
     silent! call matchdelete(w:vimcap_cursor_match)
   endif
-  let w:vimcap_cursor_match = matchaddpos('VimcapCursorByte', [[a:lnum, a:byte * 3 + 1, 2]])
+  let w:vimcap_cursor_match = matchaddpos('VimcapCursorByte', [[a:lnum, s:hexcol(a:byte), 2]])
 endfunction
 
 " ---------------------------------------------------------------------------
@@ -534,12 +570,12 @@ function! vimcap#field_jump(direction) abort
       return
     endif
   endif
-  call cursor(line('.'), target * 3 + 1)
+  call cursor(line('.'), s:hexcol(target))
 endfunction
 
 function! vimcap#goto_offset(offset) abort
   let byte = a:offset =~? '^0x' ? str2nr(a:offset[2:], 16) : str2nr(a:offset)
-  call cursor(line('.'), byte * 3 + 1)
+  call cursor(line('.'), s:hexcol(byte))
 endfunction
 
 " Interpret the visually selected bytes as integers and text.
@@ -730,7 +766,7 @@ function! vimcap#grep(pattern) abort
     return
   endif
   let entries = map(copy(response.matches), {_, m -> {
-        \ 'bufnr': bufnr('%'), 'lnum': m[0], 'col': m[1] * 3 + 1,
+        \ 'bufnr': bufnr('%'), 'lnum': m[0], 'col': s:hexcol(m[1]),
         \ 'text': printf('byte 0x%02X  %s', m[1], m[2])}})
   call setqflist(entries, 'r')
   if empty(entries)
@@ -749,16 +785,11 @@ function! vimcap#stats() abort
     return
   endif
   call s:pane('vimcap://stats', response.lines, '')
-  let pane = bufnr('vimcap://stats')
-  let winid = pane > 0 ? bufwinid(pane) : -1
-  if winid > 0 && !getbufvar(pane, 'vimcap_stats_syntax', 0)
-    call setbufvar(pane, 'vimcap_stats_syntax', 1)
-    call win_execute(winid, [
-          \ 'syntax match VimcapHeader /^\d\+ packets .*/',
-          \ 'syntax match VimcapLayerName /^\a.*/',
-          \ 'syntax match VimcapBar /█\+/',
-          \ 'syntax match VimcapBarTrack /░\+/'])
-  endif
+  call s:apply_pane_syntax('stats', 'vimcap_stats_syntax', [
+        \ 'syntax match VimcapHeader /^\d\+ packets .*/',
+        \ 'syntax match VimcapLayerName /^\a.*/',
+        \ 'syntax match VimcapBar /█\+/',
+        \ 'syntax match VimcapBarTrack /░\+/'])
 endfunction
 
 " ---------------------------------------------------------------------------
@@ -1034,7 +1065,7 @@ endfunction
 " An open pane window in the same region, to stack the new pane beneath.
 function! s:region_window(region) abort
   for name in keys(s:default_region) + keys(get(g:, 'vimcap_pane_region', {}))
-    let winid = bufwinid(bufnr('vimcap://' . name))
+    let winid = s:pane_winid(name)
     if winid > 0 && s:pane_region('vimcap://' . name) ==# a:region
       return winid
     endif
@@ -1195,12 +1226,17 @@ endfunction
 function! vimcap#bits_pane() abort
   call s:pane('vimcap://bits',
         \ s:byte_pane_lines(bufnr('%'), s:byte_panes.bits.line), 'scroll')
-  let winid = bufwinid(bufnr('vimcap://bits'))
-  if winid > 0
-    call win_execute(winid, 'if !get(b:, "vimcap_bits_syntax", 0)'
-          \ . ' | syntax match VimcapBitOn /█\+/'
-          \ . ' | syntax match VimcapBitOff /░\+/'
-          \ . ' | let b:vimcap_bits_syntax = 1 | endif')
+  call s:apply_pane_syntax('bits', 'vimcap_bits_syntax', [
+        \ 'syntax match VimcapBitOn /█\+/',
+        \ 'syntax match VimcapBitOff /░\+/'])
+endfunction
+
+" Re-render the detail pane (one packet, under the hex cursor) if it is open.
+function! s:refresh_detail_pane(bufnr) abort
+  let hexwin = bufwinid(a:bufnr)
+  if hexwin > 0 && s:pane_winid('detail') > 0
+    call s:sync_pane('vimcap://detail', s:detail_lines(a:bufnr,
+          \ line('.', hexwin), getbufvar(a:bufnr, 'vimcap_detail_proto', '')))
   endif
 endfunction
 
@@ -1211,18 +1247,18 @@ function! vimcap#update_pane_lines(bufnr, lines) abort
     return
   endif
   for [name, spec] in items(s:byte_panes)
-    let pane = bufnr('vimcap://' . name)
-    if bufwinid(pane) < 0
+    if s:pane_winid(name) < 0
       continue
     endif
+    let pane = bufnr('vimcap://' . name)
     call setbufvar(pane, '&modifiable', 1)
     for lnum in a:lines
       call setbufline(pane, lnum, spec.line(get(getbufline(a:bufnr, lnum), 0, '')))
     endfor
     call setbufvar(pane, '&modifiable', 0)
   endfor
-  let summary = bufnr('vimcap://summary')
-  if bufwinid(summary) >= 0
+  if s:pane_winid('summary') >= 0
+    let summary = bufnr('vimcap://summary')
     let packets = s:packets(a:bufnr)
     call setbufvar(summary, '&modifiable', 1)
     for lnum in a:lines
@@ -1235,10 +1271,8 @@ function! vimcap#update_pane_lines(bufnr, lines) abort
   endif
   " The detail pane shows one packet; refresh it only if that packet changed.
   let hexwin = bufwinid(a:bufnr)
-  if hexwin > 0 && bufwinid(bufnr('vimcap://detail')) > 0
-        \ && index(a:lines, line('.', hexwin)) >= 0
-    call s:sync_pane('vimcap://detail', s:detail_lines(a:bufnr,
-          \ line('.', hexwin), getbufvar(a:bufnr, 'vimcap_detail_proto', '')))
+  if hexwin > 0 && index(a:lines, line('.', hexwin)) >= 0
+    call s:refresh_detail_pane(a:bufnr)
   endif
 endfunction
 
@@ -1247,19 +1281,15 @@ endfunction
 " built for panes that are actually open, so closed panes cost nothing.
 function! vimcap#update_panes(bufnr) abort
   for [name, spec] in items(s:byte_panes)
-    if bufwinid(bufnr('vimcap://' . name)) >= 0
+    if s:pane_winid(name) >= 0
       call s:sync_pane('vimcap://' . name,
             \ s:byte_pane_lines(a:bufnr, spec.line))
     endif
   endfor
-  if bufwinid(bufnr('vimcap://summary')) >= 0
+  if s:pane_winid('summary') >= 0
     call s:sync_pane('vimcap://summary', s:summary_lines(a:bufnr))
   endif
-  let hexwin = bufwinid(a:bufnr)
-  if hexwin > 0 && bufwinid(bufnr('vimcap://detail')) > 0
-    call s:sync_pane('vimcap://detail', s:detail_lines(a:bufnr,
-          \ line('.', hexwin), getbufvar(a:bufnr, 'vimcap_detail_proto', '')))
-  endif
+  call s:refresh_detail_pane(a:bufnr)
 endfunction
 
 function! vimcap#summary_pane(...) abort
@@ -1347,13 +1377,7 @@ endfunction
 " headings / offsets) and the scapy-show fallback (###[ Layer ]###). Set once
 " per detail buffer (it is wiped and recreated, so the flag resets with it).
 function! s:detail_apply_syntax() abort
-  let pane = bufnr('vimcap://detail')
-  let winid = pane > 0 ? bufwinid(pane) : -1
-  if winid <= 0 || getbufvar(pane, 'vimcap_detail_syntax', 0)
-    return
-  endif
-  call setbufvar(pane, 'vimcap_detail_syntax', 1)
-  call win_execute(winid, [
+  call s:apply_pane_syntax('detail', 'vimcap_detail_syntax', [
         \ 'syntax match VimcapHeader /^Packet .*/',
         \ 'syntax match VimcapRule /^─\+$/',
         \ 'syntax match VimcapLayerName /^▸ .*/',
@@ -1366,7 +1390,7 @@ endfunction
 
 " Emphasise the detail row for the field under the cursor, and scroll to it.
 function! s:detail_highlight_field() abort
-  let winid = bufwinid(bufnr('vimcap://detail'))
+  let winid = s:pane_winid('detail')
   if winid <= 0
     return
   endif
@@ -1425,29 +1449,16 @@ endfunction
 
 function! vimcap#welcome() abort
   call s:pane('vimcap://help', s:welcome_lines(), '')
-  let pane = bufnr('vimcap://help')
-  let winid = pane > 0 ? bufwinid(pane) : -1
-  if winid <= 0
-    return
-  endif
-  if !getbufvar(pane, 'vimcap_help_syntax', 0)
-    call setbufvar(pane, 'vimcap_help_syntax', 1)
-    call win_execute(winid, [
-          \ 'syntax match VimcapHeader /vimcap/',
-          \ 'syntax match VimcapPath /a pcap hex editor/',
-          \ 'syntax match VimcapLayerName /^  \u.*/',
-          \ 'syntax match VimcapValue /:\a\+/',
-          \ 'syntax match VimcapField /^\s\+\zs[A-Z>][a-z>]*\ze\s\{2}/'])
-  endif
+  call s:apply_pane_syntax('help', 'vimcap_help_syntax', [
+        \ 'syntax match VimcapHeader /vimcap/',
+        \ 'syntax match VimcapPath /a pcap hex editor/',
+        \ 'syntax match VimcapLayerName /^  \u.*/',
+        \ 'syntax match VimcapValue /:\a\+/',
+        \ 'syntax match VimcapField /^\s\+\zs[A-Z>][a-z>]*\ze\s\{2}/'])
 endfunction
 
 function! vimcap#welcome_toggle() abort
-  let winid = bufwinid(bufnr('vimcap://help'))
-  if winid > 0
-    call win_execute(winid, 'close')
-  else
-    call vimcap#welcome()
-  endif
+  call s:toggle_pane('help', function('vimcap#welcome'))
 endfunction
 
 " Close every vimcap pane (and the agent terminal), leaving just the hex.
@@ -1457,7 +1468,7 @@ let s:all_panes = ['detail', 'summary', 'stream', 'stats', 'ascii', 'bits',
 function! vimcap#close_panes() abort
   let closed = 0
   for name in s:all_panes
-    let winid = bufwinid(bufnr('vimcap://' . name))
+    let winid = s:pane_winid(name)
     if winid > 0
       call win_execute(winid, 'close')
       let closed += 1
@@ -1538,12 +1549,7 @@ endfunction
 
 " K: show the dissection pane, or put it away if it is already showing.
 function! vimcap#detail_toggle() abort
-  let winid = bufwinid(bufnr('vimcap://detail'))
-  if winid > 0
-    call win_execute(winid, 'close')
-  else
-    call vimcap#detail()
-  endif
+  call s:toggle_pane('detail', function('vimcap#detail'))
 endfunction
 
 " Cursor sync is kept loop-free without locks or timers: s:last_track records
@@ -1577,11 +1583,6 @@ function! vimcap#track_cursor() abort
   call s:do_track()
 endfunction
 
-" Internal: run the pane-tracking worker in the hex window's context.
-function! vimcap#_do_track() abort
-  call s:do_track()
-endfunction
-
 " Reverse link: a cursor move inside a byte/packet-aligned pane drives the hex
 " view (and thus every other pane) back to the matching byte/packet.
 function! vimcap#pane_cursor_moved(name) abort
@@ -1590,10 +1591,9 @@ function! vimcap#pane_cursor_moved(name) abort
   endif
   let hexline = line('.')
   let byte = 0
-  if a:name ==# 'ascii'
-    let byte = (virtcol('.') - 1) / 3
-  elseif a:name ==# 'bits'
-    let byte = (virtcol('.') - 1) / 9
+  if has_key(s:byte_panes, a:name)
+    " Inverse of s:do_track's forward mapping, using the same cols constant.
+    let byte = (virtcol('.') - 1) / s:byte_panes[a:name].cols
   elseif a:name ==# 'detail'
     let hexline = get(s:, 'detail_packet_lnum', hexline)
     for [start, end, idx] in get(s:, 'detail_fieldmap', [])
@@ -1612,8 +1612,9 @@ function! vimcap#pane_cursor_moved(name) abort
   if hexwin <= 0
     return
   endif
+  " track_cursor's guard is false here (the position just changed), so it runs.
   call win_execute(hexwin,
-        \ 'call cursor(' . hexline . ', ' . (byte * 3 + 1) . ') | call vimcap#_do_track()')
+        \ 'call cursor(' . hexline . ', ' . s:hexcol(byte) . ') | call vimcap#track_cursor()')
 endfunction
 
 " Point a pane's cursor at byte-column bytecol on line lnum. When bytelen > 0,
@@ -1639,8 +1640,7 @@ endfunction
 " The rich view renders from annotations (cheap); only the scapy-show
 " fallback is costly, so skip following when we have neither.
 function! vimcap#detail_follow() abort
-  let pane = bufnr('vimcap://detail')
-  if pane < 0 || bufwinid(pane) < 0
+  if s:pane_winid('detail') <= 0
         \ || get(b:, 'vimcap_detail_lnum', -1) == line('.')
     return
   endif

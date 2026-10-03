@@ -75,12 +75,13 @@ def native_read(path):
     blob = Path(path).read_bytes()
     if len(blob) < 24:
         raise ValueError("file too short to be a pcap")
-    magic = blob[:4]
-    endian = {b"\xd4\xc3\xb2\xa1": "<", b"\x4d\x3c\xb2\xa1": "<",
-              b"\xa1\xb2\xc3\xd4": ">", b"\xa1\xb2\x3c\x4d": ">"}.get(magic)
-    if endian is None:
+    # magic -> (endianness, nanosecond-resolution timestamps)
+    magics = {
+        b"\xd4\xc3\xb2\xa1": ("<", False), b"\x4d\x3c\xb2\xa1": ("<", True),
+        b"\xa1\xb2\xc3\xd4": (">", False), b"\xa1\xb2\x3c\x4d": (">", True)}
+    if blob[:4] not in magics:
         raise ValueError("not a classic pcap file (pcapng requires scapy)")
-    nano = magic in (b"\x4d\x3c\xb2\xa1", b"\xa1\xb2\x3c\x4d")
+    endian, nano = magics[blob[:4]]
     header = struct.Struct(endian + "IHHIIII")
     record = struct.Struct(endian + "IIII")
     linktype = header.unpack_from(blob, 0)[6]
