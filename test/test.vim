@@ -310,6 +310,15 @@ call s:check(bufwinid(bufnr('vimcap://detail')) < 0
       \ ':VimcapClose closes every pane')
 call s:check(exists(':VimcapClose') == 2, ':VimcapClose command is available')
 
+" --- theme switching ---------------------------------------------------------
+VimcapTheme neon
+call s:check(g:vimcap_theme ==# 'neon', ':VimcapTheme switches the theme live')
+VimcapTheme bogus
+call s:check(g:vimcap_theme ==# 'neon', ':VimcapTheme rejects an unknown theme')
+call s:check(index(vimcap#theme#complete('n', '', 0), 'neon') >= 0,
+      \ 'theme completion offers matching names')
+VimcapTheme mono
+
 " --- empty session + sniff lays out the workspace ----------------------------
 " A new (non-existent) capture must become a vimcap buffer so commands work,
 " and populating it (as a sniff does) must open the configured panes.

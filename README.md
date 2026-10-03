@@ -166,6 +166,8 @@ IP layer is the same colour in the hex, the detail heading and the summary):
 let g:vimcap_theme = 'mono'   " mono | neon | warm | classic (follows your colourscheme)
 ```
 
+Or switch live with `:VimcapTheme neon` (tab-completes the names).
+
 Define your own in `g:vimcap_themes`, or override individual groups
 (`VimcapLayer0`–`3`, `VimcapPayload`, `VimcapCursorByte`, `VimcapHeader`,
 `VimcapOffset`, `VimcapBar`, …) — see `:help vimcap-highlighting`.

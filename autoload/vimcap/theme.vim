@@ -75,6 +75,29 @@ function! vimcap#theme#names() abort
         \ + keys(get(g:, 'vimcap_themes', {})))
 endfunction
 
+" :VimcapTheme [name] — switch theme live, or report the current one.
+function! vimcap#theme#set(name) abort
+  if empty(a:name)
+    echo 'vimcap theme: ' . get(g:, 'vimcap_theme', 'mono')
+          \ . '  (available: ' . join(vimcap#theme#names(), ', ') . ')'
+    return
+  endif
+  if index(vimcap#theme#names(), a:name) < 0
+    echohl ErrorMsg
+    echomsg 'vimcap: unknown theme ' . string(a:name)
+          \ . '; try one of ' . join(vimcap#theme#names(), ', ')
+    echohl None
+    return
+  endif
+  let g:vimcap_theme = a:name
+  call vimcap#theme#apply()
+  echo 'vimcap theme: ' . a:name
+endfunction
+
+function! vimcap#theme#complete(arglead, cmdline, cursorpos) abort
+  return filter(vimcap#theme#names(), 'v:val =~# "^" . a:arglead')
+endfunction
+
 function! vimcap#theme#apply() abort
   let name = get(g:, 'vimcap_theme', 'mono')
 

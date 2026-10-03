@@ -129,6 +129,12 @@ dissection tree re-renders for it. The mouse can scroll and focus any pane
 :VimcapClose            Close every vimcap pane (and the agent terminal),
                         leaving just the hex window. Also on |>q|.
 
+                                                                *:VimcapTheme*
+:VimcapTheme [name]     Switch the colour theme live (|g:vimcap_theme|), with
+                        tab-completion of the available names. With no
+                        argument, report the current theme. Available
+                        anywhere, not just in a capture buffer.
+
                                                                *:VimcapHealth*
 :VimcapHealth           Report the environment vimcap depends on: editor
                         features, the Python interpreter and scapy version it
@@ -383,7 +389,7 @@ g:vimcap_theme                                                *g:vimcap_theme*
         neon      vibrant cyan/green/magenta/amber on a dark ground
         warm      softer solarized-style amber/teal/olive/rose
         classic   link to your colourscheme's groups (no fixed colours)
-<    Default: "mono"
+<    Set it in your vimrc, or switch live with |:VimcapTheme|. Default: "mono"
 
 g:vimcap_themes                                              *g:vimcap_themes*
     Dictionary of extra themes (or overrides of the built-ins), each a map of
