@@ -718,8 +718,19 @@ function! vimcap#stats() abort
   let response = vimcap#api(extend(s:base_payload(),
         \ {'op': 'stats', 'packets': getline(1, '$'),
         \  'times': vimcap#packet_times(bufnr('%'))}))
-  if has_key(response, 'lines')
-    call s:pane('vimcap://stats', response.lines, '')
+  if !has_key(response, 'lines')
+    return
+  endif
+  call s:pane('vimcap://stats', response.lines, '')
+  let pane = bufnr('vimcap://stats')
+  let winid = pane > 0 ? bufwinid(pane) : -1
+  if winid > 0 && !getbufvar(pane, 'vimcap_stats_syntax', 0)
+    call setbufvar(pane, 'vimcap_stats_syntax', 1)
+    call win_execute(winid, [
+          \ 'syntax match VimcapHeader /^\d\+ packets .*/',
+          \ 'syntax match VimcapLayerName /^\a.*/',
+          \ 'syntax match VimcapBar /█\+/',
+          \ 'syntax match VimcapBarTrack /░\+/'])
   endif
 endfunction
 
@@ -1172,7 +1183,51 @@ endfunction
 
 " Dissection tree for one packet, via the live daemon when available,
 " otherwise through a helper subprocess.
+" A styled dissection view for packet a:lnum, built from the annotations we
+" already have (layers + per-field offsets + values + checksum flags). Returns
+" [lines, fieldmap] where fieldmap is [[start_byte, end_byte, line], ...] for
+" cursor-field emphasis. Returns [[], []] when there is nothing to render, so
+" the caller can fall back to scapy's show().
+function! s:detail_from_meta(bufnr, lnum) abort
+  let packets = s:packets(a:bufnr)
+  if a:lnum > len(packets)
+    return [[], []]
+  endif
+  let p = packets[a:lnum - 1]
+  if empty(get(p, 'layers', []))
+    return [[], []]
+  endif
+  let path = join(map(copy(p.layers), 'v:val[2]'), ' › ')
+  let header = printf('Packet %d/%d   %s   %d bytes',
+        \ a:lnum, len(packets), get(p, 't', ''), get(p, 'wl', 0))
+  let lines = [header, path, repeat('─', max([strchars(path), 44]))]
+  let bad = get(p, 'bad', [])
+  let fieldmap = []
+  for [lstart, lend, lname] in p.layers
+    call add(lines, printf('▸ %s  ·  %d B', lname, lend - lstart))
+    for [fstart, fend, flayer, fname, fvalue] in get(p, 'fields', [])
+      if flayer !=# lname || fstart < lstart || fstart >= lend
+        continue
+      endif
+      let flag = index(bad, flayer . '.' . fname) >= 0 ? '  ✗' : ''
+      call add(lines, printf('    0x%02X  %-9s %s%s', fstart, fname, fvalue, flag))
+      call add(fieldmap, [fstart, fend, len(lines)])
+    endfor
+  endfor
+  return [lines, fieldmap]
+endfunction
+
 function! s:detail_lines(bufnr, lnum, proto) abort
+  " Prefer the rich, offset-annotated view; it needs no subprocess and works
+  " without the live daemon. A specific --proto forces scapy's own show().
+  if empty(a:proto)
+    let [lines, fieldmap] = s:detail_from_meta(a:bufnr, a:lnum)
+    if !empty(lines)
+      let s:detail_fieldmap = fieldmap
+      return lines
+    endif
+  endif
+  let s:detail_fieldmap = []
   let hexline = get(getbufline(a:bufnr, a:lnum), 0, '')
   let linktype = vimcap#linktype(a:bufnr)
   if vimcap#live#available()
@@ -1190,11 +1245,55 @@ function! s:detail_lines(bufnr, lnum, proto) abort
   endtry
 endfunction
 
+" Colour the detail buffer. Patterns cover both the rich view (header / ▸
+" headings / offsets) and the scapy-show fallback (###[ Layer ]###). Set once
+" per detail buffer (it is wiped and recreated, so the flag resets with it).
+function! s:detail_apply_syntax() abort
+  let pane = bufnr('vimcap://detail')
+  let winid = pane > 0 ? bufwinid(pane) : -1
+  if winid <= 0 || getbufvar(pane, 'vimcap_detail_syntax', 0)
+    return
+  endif
+  call setbufvar(pane, 'vimcap_detail_syntax', 1)
+  call win_execute(winid, [
+        \ 'syntax match VimcapHeader /^Packet .*/',
+        \ 'syntax match VimcapRule /^─\+$/',
+        \ 'syntax match VimcapLayerName /^▸ .*/',
+        \ 'syntax match VimcapLayerName /^###\[ .* \]###/',
+        \ 'syntax match VimcapPathSep /›/',
+        \ 'syntax match VimcapOffset /^\s\+\zs0x\x\+/',
+        \ 'syntax match VimcapVendor /(\a[^)]*)$/',
+        \ 'syntax match VimcapBad /✗/'])
+endfunction
+
+" Emphasise the detail row for the field under the cursor, and scroll to it.
+function! s:detail_highlight_field() abort
+  let winid = bufwinid(bufnr('vimcap://detail'))
+  if winid <= 0
+    return
+  endif
+  let byte = s:cursor_byte()
+  let target = 0
+  for [start, end, idx] in get(s:, 'detail_fieldmap', [])
+    if byte >= start && byte < end
+      let target = idx
+      break
+    endif
+  endfor
+  call win_execute(winid, [
+        \ 'if exists("w:vimcap_field_match") | silent! call matchdelete(w:vimcap_field_match) | endif',
+        \ 'let w:vimcap_field_match = ' . (target > 0
+        \     ? 'matchaddpos("VimcapFieldCursor", [' . target . '])' : '-1'),
+        \ target > 0 ? 'call cursor(' . target . ', 1)' : ''])
+endfunction
+
 function! vimcap#detail(...) abort
   let b:vimcap_detail_proto = a:0 && !empty(a:1) ? a:1 : ''
   let b:vimcap_detail_lnum = line('.')
   call s:pane('vimcap://detail',
         \ s:detail_lines(bufnr('%'), line('.'), b:vimcap_detail_proto), '')
+  call s:detail_apply_syntax()
+  call s:detail_highlight_field()
 endfunction
 
 " K: show the dissection pane, or put it away if it is already showing.
@@ -1219,6 +1318,9 @@ function! vimcap#track_cursor() abort
   call s:track_pane('vimcap://summary', lnum, -1, 0)
   call s:track_pane('vimcap://utf8', lnum, -1, 0)
   call vimcap#detail_follow()
+  " Re-emphasise the detail field as the byte moves within the same packet
+  " (detail_follow only rebuilds when the packet changes).
+  call s:detail_highlight_field()
 endfunction
 
 " Move a pane's cursor to the packet line and, when chars >= 0, to that
@@ -1244,15 +1346,23 @@ function! s:track_pane(name, lnum, chars, matchlen) abort
 endfunction
 
 " While the detail pane is open, keep it on the packet under the cursor.
-" Only runs through the daemon: a subprocess per cursor move would crawl.
+" The rich view renders from annotations (cheap); only the scapy-show
+" fallback is costly, so skip following when we have neither.
 function! vimcap#detail_follow() abort
   let pane = bufnr('vimcap://detail')
   if pane < 0 || bufwinid(pane) < 0
         \ || get(b:, 'vimcap_detail_lnum', -1) == line('.')
-        \ || !vimcap#live#available()
+    return
+  endif
+  let packets = s:packets(bufnr('%'))
+  let has_meta = line('.') <= len(packets)
+        \ && !empty(get(get(packets, line('.') - 1, {}), 'layers', []))
+  if !has_meta && !vimcap#live#available()
     return
   endif
   let b:vimcap_detail_lnum = line('.')
   call s:sync_pane('vimcap://detail', s:detail_lines(bufnr('%'), line('.'),
         \ get(b:, 'vimcap_detail_proto', '')))
+  call s:detail_apply_syntax()
+  call s:detail_highlight_field()
 endfunction
