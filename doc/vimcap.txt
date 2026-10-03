@@ -98,7 +98,7 @@ pane scrolls the hex window with it.
 
                                                                  *:VimcapBits*
 :VimcapBits             Open a bottom split rendering each byte as binary:
-                        █ for a set bit, · for a clear one, most significant
+                        █ for a set bit, ░ for a clear one, most significant
                         bit first, one group per byte. Colours come from
                         the VimcapBitOn / VimcapBitOff highlight groups.
 

@@ -52,7 +52,7 @@ call s:check(&scrollbind, 'hex window scroll-binds to the ascii pane')
 call vimcap#bits_pane()
 let s:bits_buf = bufnr('vimcap://bits')
 call s:check(s:bits_buf > 0
-      \ && getbufline(s:bits_buf, 1)[0] =~# '^█·█·█·█· █·███·██ ',
+      \ && getbufline(s:bits_buf, 1)[0] =~# '^█░█░█░█░ █░███░██ ',
       \ 'bits pane renders bytes as block glyphs')
 
 call vimcap#detail()
@@ -198,7 +198,7 @@ call vimcap#live#flush(bufnr('%'))
 call s:check(getbufline(s:ascii_buf, 1)[0] =~# 'Z  E  T',
       \ 'ascii pane follows live edits')
 " 0x5a = 01011010
-call s:check(getbufline(s:bits_buf, 1)[0] =~# '·█·██·█·',
+call s:check(getbufline(s:bits_buf, 1)[0] =~# '░█░██░█░',
       \ 'bits pane follows live edits')
 call cursor(1, 54 * 3 + 1)
 normal! R47

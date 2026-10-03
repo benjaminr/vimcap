@@ -1140,13 +1140,16 @@ endfunction
 
 " Precompute each byte value's rendering once, so building a line is just a
 " table lookup per byte rather than a per-bit loop.
+" Both bit glyphs are 3 bytes (█ U+2588, ░ U+2591) so every byte occupies a
+" fixed byte-width in the line — this lets the cursor highlight use matchaddpos
+" (O(1)) instead of a \%v regex, which is O(n^2) on very long packet rows.
 let s:ascii_glyph = []
 let s:bits_glyph = []
 for s:b in range(256)
   call add(s:ascii_glyph, (s:b >= 32 && s:b < 127) ? nr2char(s:b) : '.')
   let s:g = ''
   for s:w in [128, 64, 32, 16, 8, 4, 2, 1]
-    let s:g .= and(s:b, s:w) ? '█' : '·'
+    let s:g .= and(s:b, s:w) ? '█' : '░'
   endfor
   call add(s:bits_glyph, s:g)
 endfor
@@ -1160,13 +1163,15 @@ function! s:bits_line(hexline) abort
   return join(map(split(a:hexline), 's:bits_glyph[str2nr(v:val, 16)]'), ' ')
 endfunction
 
-" Byte-aligned panes rendered from the hex bytes. Each knows its per-line
-" formatter, its screen columns per byte, and how many glyphs to highlight
-" when tracking the cursor. This table drives building and cursor-tracking
-" so the two never drift.
+" Byte-aligned panes rendered from the hex bytes. Per byte N (0-based):
+"   cols   screen columns per byte (for the reverse cursor mapping)
+"   bytecol  1-based byte offset of the byte in the rendered line (N*stride+1)
+"   bytelen  byte length to highlight for one byte
+" ascii: "X  " = 3 bytes/byte, highlight 1. bits: 8*3-byte glyphs + space = 25
+" bytes/byte, highlight the 24-byte group.
 let s:byte_panes = {
-      \ 'ascii': {'line': function('s:ascii_line'), 'cols': 3, 'matchlen': 1},
-      \ 'bits':  {'line': function('s:bits_line'),  'cols': 9, 'matchlen': 8}}
+      \ 'ascii': {'line': function('s:ascii_line'), 'cols': 3, 'stride': 3, 'bytelen': 1},
+      \ 'bits':  {'line': function('s:bits_line'),  'cols': 9, 'stride': 25, 'bytelen': 24}}
 
 function! s:byte_pane_lines(bufnr, Formatter) abort
   return map(getbufline(a:bufnr, 1, '$'), {_, line -> a:Formatter(line)})
@@ -1194,7 +1199,7 @@ function! vimcap#bits_pane() abort
   if winid > 0
     call win_execute(winid, 'if !get(b:, "vimcap_bits_syntax", 0)'
           \ . ' | syntax match VimcapBitOn /█\+/'
-          \ . ' | syntax match VimcapBitOff /·\+/'
+          \ . ' | syntax match VimcapBitOff /░\+/'
           \ . ' | let b:vimcap_bits_syntax = 1 | endif')
   endif
 endfunction
@@ -1556,7 +1561,7 @@ function! s:do_track() abort
   let s:last_track = [lnum, byte]
   call s:highlight_cursor_byte(lnum, byte)
   for [name, spec] in items(s:byte_panes)
-    call s:track_pane('vimcap://' . name, lnum, byte * spec.cols, spec.matchlen)
+    call s:track_pane('vimcap://' . name, lnum, byte * spec.stride + 1, spec.bytelen)
   endfor
   call s:track_pane('vimcap://summary', lnum, -1, 0)
   call s:track_pane('vimcap://utf8', lnum, -1, 0)
@@ -1611,24 +1616,21 @@ function! vimcap#pane_cursor_moved(name) abort
         \ 'call cursor(' . hexline . ', ' . (byte * 3 + 1) . ') | call vimcap#_do_track()')
 endfunction
 
-" Move a pane's cursor to the packet line and, when chars >= 0, to that
-" character column, highlighting matchlen characters there.
-function! s:track_pane(name, lnum, chars, matchlen) abort
+" Point a pane's cursor at byte-column bytecol on line lnum. When bytelen > 0,
+" highlight bytelen bytes there with matchaddpos (O(1), unlike a \%v regex which
+" is pathological on long rows). bytecol <= 0 means "line only" (summary/utf8).
+function! s:track_pane(name, lnum, bytecol, bytelen) abort
   let winid = bufwinid(bufnr(a:name))
   if winid < 0
     return
   endif
-  let commands = ['call cursor(' . a:lnum . ', 1)']
-  if a:chars > 0
-    call add(commands, 'execute "normal! ' . a:chars . 'l"')
-  endif
-  if a:matchlen > 0
-    " Highlight the tracked byte; \%Nv anchors survive multibyte glyphs.
-    let pattern = '\%' . a:lnum . 'l\%' . (a:chars + 1) . 'v.\{' . a:matchlen . '}'
+  let col = a:bytecol > 0 ? a:bytecol : 1
+  let commands = ['call cursor(' . a:lnum . ', ' . col . ')']
+  if a:bytelen > 0
     call add(commands, 'if get(w:, "vimcap_track", -1) != -1'
           \ . ' | silent! call matchdelete(w:vimcap_track) | endif')
-    call add(commands, 'let w:vimcap_track = matchadd("VimcapCursorByte", '
-          \ . string(pattern) . ')')
+    call add(commands, 'let w:vimcap_track = matchaddpos("VimcapCursorByte", [['
+          \ . a:lnum . ', ' . a:bytecol . ', ' . a:bytelen . ']])')
   endif
   call win_execute(winid, commands)
 endfunction
