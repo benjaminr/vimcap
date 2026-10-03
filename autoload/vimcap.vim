@@ -1320,13 +1320,8 @@ endfunction
 function! s:welcome_lines() abort
   return [
         \ '',
-        \ '          .-"""""-.',
-        \ "        .'         '.",
-        \ '       /   vimcap    \',
-        \ '      |               |',
-        \ "       \\               '-.._____",
-        \ "        '-.________________.----'",
-        \ '            a pcap hex editor',
+        \ '   🧢  vimcap',
+        \ '       a pcap hex editor',
         \ '',
         \ '  Getting started',
         \ '    :VimcapSniff en0     capture live from an interface',
@@ -1355,14 +1350,11 @@ function! vimcap#welcome() abort
     call setbufvar(pane, 'vimcap_help_syntax', 1)
     call win_execute(winid, [
           \ 'syntax match VimcapHeader /vimcap/',
+          \ 'syntax match VimcapPath /a pcap hex editor/',
           \ 'syntax match VimcapLayerName /^  \u.*/',
           \ 'syntax match VimcapValue /:\a\+/',
-          \ 'syntax match VimcapField /^\s\+\zs[A-Z>][a-z>]*\ze\s\{2}/',
-          \ 'syntax match VimcapPath /[-'."'".'._\/\\|()]\{2,}/'])
+          \ 'syntax match VimcapField /^\s\+\zs[A-Z>][a-z>]*\ze\s\{2}/'])
   endif
-  " Colour the logo block (the first lines, up to the tagline) in the accent.
-  call win_execute(winid,
-        \ 'silent! call matchadd("VimcapPath", "\\%<9l[-'."'".'._/\\\\|() ]\\{3,}")')
 endfunction
 
 function! vimcap#welcome_toggle() abort
