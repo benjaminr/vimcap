@@ -11,18 +11,13 @@ let g:loaded_vimcap = 1
 let g:vimcap_script = get(g:, 'vimcap_script',
       \ expand('<sfile>:p:h:h') . '/python/vimcap.py')
 
-" Layer colours cycle through these groups; payload bytes get their own.
-highlight default link VimcapLayer0 Identifier
-highlight default link VimcapLayer1 Statement
-highlight default link VimcapLayer2 Type
-highlight default link VimcapLayer3 Special
-highlight default link VimcapPayload String
-highlight default link VimcapCursorByte MatchParen
-highlight default link VimcapBitOn Statement
-highlight default link VimcapBitOff NonText
+" Apply the colour theme now and whenever the colourscheme changes (so a
+" later :colorscheme does not blow vimcap's groups away).
+call vimcap#theme#apply()
 
 augroup vimcap
   autocmd!
+  autocmd ColorScheme * call vimcap#theme#apply()
   autocmd BufReadCmd  *.pcap,*.pcapng,*.cap call vimcap#load(expand('<amatch>'))
   " A new (non-existent) capture: set up an empty session so commands like
   " :VimcapSniff are ready to populate it.
