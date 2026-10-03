@@ -178,19 +178,24 @@ function! vimcap#load(path) abort
   call s:load_meta()
   call vimcap#init()
   call vimcap#apply_highlights(bufnr('%'))
+  call vimcap#open_workspace()
+endfunction
 
-  " Panes that open along with the capture, in the configured order; K puts
-  " the dissection away.
-  if line('$') > 0 && !empty(getline(1))
-    for pane in vimcap#auto_panes()
-      if bufwinid(bufnr('vimcap://' . pane)) <= 0
-        call s:open_named_pane(pane)
-      endif
-    endfor
+" Open the configured panes (and, if enabled, the agent) for the current
+" capture, in order. Does nothing while the buffer is empty, so it can be
+" called again once packets arrive — e.g. after sniffing into a new session.
+" Idempotent: panes already open are left in place and just refreshed.
+function! vimcap#open_workspace() abort
+  if line('$') <= 0 || empty(getline(1))
+    return
   endif
+  for pane in vimcap#auto_panes()
+    if bufwinid(bufnr('vimcap://' . pane)) <= 0
+      call s:open_named_pane(pane)
+    endif
+  endfor
   call vimcap#update_panes(bufnr('%'))
-
-  if get(g:, 'vimcap_auto_agent', 1) && line('$') > 0 && !empty(getline(1))
+  if get(g:, 'vimcap_auto_agent', 1)
     call vimcap#agent#auto()
   endif
 endfunction
@@ -755,8 +760,15 @@ function! vimcap#sniff(argstring) abort
     echo 'no packets captured'
     return
   endif
-  call append(line('$'), out)
+  " Replace the lone blank line of a fresh buffer; otherwise append.
+  if line('$') == 1 && empty(getline(1))
+    call setline(1, out)
+  else
+    call append(line('$'), out)
+  endif
   call vimcap#live#flush(bufnr('%'))
+  " Lay out the workspace if this sniff populated an empty session.
+  call vimcap#open_workspace()
   echo len(out) . ' packets captured'
 endfunction
 

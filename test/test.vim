@@ -293,7 +293,34 @@ call s:check(get(b:vimcap.packets[0], 't', '') !=# s:deleted_time,
 let s:send_msg = substitute(execute('VimcapSend'), '[[:cntrl:]]', ' ', 'g')
 call s:check(s:send_msg =~# 'disabled', 'sending is disabled by default')
 
+" --- empty session + sniff lays out the workspace ----------------------------
+" A new (non-existent) capture must become a vimcap buffer so commands work,
+" and populating it (as a sniff does) must open the configured panes.
+" Start from a clean window layout so stale panes don't mask the result
+" (closing the pane windows wipes their scratch buffers).
+new
+execute 'edit ' . fnameescape($VIMCAP_TEST_DIR . '/fresh.pcap')
+only!
+call s:check(&filetype ==# 'vimcap', 'a new .pcap is initialised as a vimcap buffer')
+call s:check(exists(':VimcapSniff') == 2, ':VimcapSniff is available in a fresh session')
+call s:check(bufwinid(bufnr('vimcap://detail')) < 0,
+      \ 'fresh session starts with no panes open')
+" Simulate what vimcap#sniff does after a capture: fill the empty buffer and
+" lay out the workspace.
+let s:captured = 'aa bb cc dd ee 02 aa bb cc dd ee 01 08 00 45 00 00 28'
+      \ . ' 00 01 00 00 40 06 3a f4 0a 00 00 01 0a 00 00 02 00 50 00 50'
+      \ . ' 00 00 00 00 00 00 00 00 50 02 20 00 00 00 00 00'
+call s:check(line('$') == 1 && empty(getline(1)), 'fresh session starts empty')
+call setline(1, s:captured)
+call vimcap#live#flush(bufnr('%'))
+call vimcap#open_workspace()
+call s:check(bufwinid(bufnr('vimcap://detail')) > 0
+      \ && bufwinid(bufnr('vimcap://ascii')) > 0
+      \ && bufwinid(bufnr('vimcap://bits')) > 0,
+      \ 'populating an empty session opens the configured panes')
+
 " --- capture diff ------------------------------------------------------------
+only!
 execute 'VimcapDiff ' . fnameescape($VIMCAP_TEST_DIR . '/roundtrip.pcap')
 call s:check(&diff, ':VimcapDiff enters diff mode')
 

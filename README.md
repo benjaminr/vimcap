@@ -42,7 +42,8 @@ comes along:
 - **Search & stats** — `:VimcapGrep pattern` loads payload matches into the
   quickfix list; `:VimcapStats` summarises protocols, conversations, ports.
 - **Captures in, captures out** — `:VimcapSniff en0` appends live traffic
-  (needs capture privileges); `:VimcapSend` replays packets (off unless
+  (needs capture privileges; open an empty `vim live.pcap` and the first
+  sniff lays out your whole workspace); `:VimcapSend` replays packets (off unless
   `g:vimcap_allow_send = 1`); `:VimcapDiff other.pcap` compares captures
   vimdiff-style; `:VimcapAnon` rewrites MACs/IPs consistently for sharing.
 - **Agentic mode** — Claude Code opens alongside the capture by default

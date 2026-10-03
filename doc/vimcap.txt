@@ -180,7 +180,12 @@ dissection tree re-renders for it. The mouse can scroll and focus any pane
 :VimcapSniff {iface} [count]
                         Capture packets from an interface (default 10, with
                         a |g:vimcap_sniff_timeout| ceiling) and append them
-                        to the buffer. Requires capture privileges.
+                        to the buffer. Requires capture privileges. Opening a
+                        new, empty capture (e.g. "vim live.pcap" on a file
+                        that does not exist yet) gives you a ready vimcap
+                        session; the first sniff that lands packets lays out
+                        the configured panes (|g:vimcap_panes|) just like
+                        loading a file.
 
                                                                  *:VimcapSend*
 :[range]VimcapSend [iface]

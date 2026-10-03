@@ -24,6 +24,9 @@ highlight default link VimcapBitOff NonText
 augroup vimcap
   autocmd!
   autocmd BufReadCmd  *.pcap,*.pcapng,*.cap call vimcap#load(expand('<amatch>'))
+  " A new (non-existent) capture: set up an empty session so commands like
+  " :VimcapSniff are ready to populate it.
+  autocmd BufNewFile  *.pcap,*.pcapng,*.cap call vimcap#load(expand('<amatch>'))
   autocmd BufWriteCmd *.pcap,*.pcapng,*.cap call vimcap#write(expand('<amatch>'))
 augroup END
 
