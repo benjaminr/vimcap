@@ -3,6 +3,8 @@ vimcap 🧢
 
 Vim as a hex editor for packet captures.
 
+<img width="1200" height="660" alt="vimcap" src="https://github.com/user-attachments/assets/cc128430-745d-4d6f-891c-cd99ec33d505" />
+
 Open a `.pcap` (or `.pcapng`) and every packet becomes a line of hex you can
 edit like any other text — except vimcap knows what the bytes *mean*:
 
